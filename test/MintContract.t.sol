@@ -191,10 +191,12 @@ contract MintContractTest is Test {
     }
 
     function test_Mint_AtElevatedIndex() public {
-        skip(2 hours);
+        // v1.1: bound ceiling is 5% — reach index 1.10 in two compliant steps
+        // (1.0 -> 1.05 -> 1.10), respecting the 20-hour throttle floor.
+        skip(20 hours + 1);
         vm.prank(admin);
-        oracle.setMaxChangeBps(2_000);
-        skip(1 hours);
+        oracle.updateIndex(105 * 1e16);
+        skip(20 hours + 1);
         vm.prank(admin);
         oracle.updateIndex(11 * 1e17);
 

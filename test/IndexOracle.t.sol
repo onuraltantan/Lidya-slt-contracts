@@ -56,7 +56,7 @@ contract IndexOracleTest is Test {
     function test_Constructor_DefaultParams() public view {
         assertEq(oracle.maxChangeBps(), 500);
         assertEq(oracle.gracePeriod(), 1 days);
-        assertEq(oracle.minUpdateInterval(), 1 hours);
+        assertEq(oracle.minUpdateInterval(), 20 hours);
     }
 
     // ----------------------------------------------------------------------
@@ -64,7 +64,7 @@ contract IndexOracleTest is Test {
     // ----------------------------------------------------------------------
 
     function test_UpdateIndex_HappyPath() public {
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         uint256 newIndex = (INITIAL_INDEX * 1003) / 1000; // +0.3%
 
         vm.prank(updater);
@@ -74,7 +74,7 @@ contract IndexOracleTest is Test {
     }
 
     function test_UpdateIndex_DownwardAlsoBounded() public {
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         uint256 newIndex = (INITIAL_INDEX * 997) / 1000; // -0.3%
 
         vm.prank(updater);
@@ -84,7 +84,7 @@ contract IndexOracleTest is Test {
     }
 
     function test_UpdateIndex_RevertOnExceedingMaxDelta() public {
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         uint256 newIndex = (INITIAL_INDEX * 11) / 10; // +10%, max is 5%
 
         vm.prank(updater);
@@ -93,7 +93,7 @@ contract IndexOracleTest is Test {
     }
 
     function test_UpdateIndex_RevertOnExceedingMaxDeltaDownward() public {
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         uint256 newIndex = (INITIAL_INDEX * 9) / 10; // -10%, max is 5%
 
         vm.prank(updater);
@@ -102,7 +102,7 @@ contract IndexOracleTest is Test {
     }
 
     function test_UpdateIndex_RevertOnTooFrequent() public {
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         vm.prank(updater);
         oracle.updateIndex(INITIAL_INDEX + 1e15);
 
@@ -113,14 +113,14 @@ contract IndexOracleTest is Test {
     }
 
     function test_UpdateIndex_RevertOnZero() public {
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         vm.prank(updater);
         vm.expectRevert(IndexOracle.IndexOracle_ZeroIndex.selector);
         oracle.updateIndex(0);
     }
 
     function test_UpdateIndex_RevertOnUnauthorized() public {
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         vm.prank(stranger);
         vm.expectRevert();
         oracle.updateIndex(INITIAL_INDEX);
@@ -134,7 +134,7 @@ contract IndexOracleTest is Test {
         vm.prank(guardian);
         oracle.pause("incident_under_review");
 
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         vm.prank(updater);
         vm.expectRevert();
         oracle.updateIndex(INITIAL_INDEX + 1e15);
@@ -154,7 +154,7 @@ contract IndexOracleTest is Test {
         oracle.unpause();
         assertFalse(oracle.paused());
 
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         vm.prank(updater);
         oracle.updateIndex(INITIAL_INDEX + 1e15);
         assertEq(oracle.pricePerShare(), INITIAL_INDEX + 1e15);
@@ -197,13 +197,14 @@ contract IndexOracleTest is Test {
     }
 
     function test_StableToSLT_ChangesWithIndex() public {
-        skip(1 hours + 1);
-        // Bump max bound to allow +20% jump for testing math at higher index.
-        vm.prank(admin);
-        oracle.setMaxChangeBps(2_000);
-        skip(1 hours + 1);
-        vm.prank(updater);
-        oracle.updateIndex(12 * 1e17); // index = 1.2
+        // v1.1: bound ceiling is 5% — walk the index up in four +5%-max steps
+        // (1.0 -> 1.05 -> 1.1 -> 1.15 -> 1.2, each within 500 bps of the previous).
+        uint256[4] memory steps = [uint256(105e16), 110e16, 115e16, 120e16];
+        for (uint256 i = 0; i < steps.length; i++) {
+            skip(20 hours + 1);
+            vm.prank(updater);
+            oracle.updateIndex(steps[i]);
+        }
 
         // At index 1.2, $1,200 should mint 1,000 SLT.
         uint256 sltAmt = oracle.stableToSLT(1_200 * 1e6);
@@ -216,8 +217,8 @@ contract IndexOracleTest is Test {
 
     function test_SetMaxChangeBps_HappyPath() public {
         vm.prank(admin);
-        oracle.setMaxChangeBps(1_000);
-        assertEq(oracle.maxChangeBps(), 1_000);
+        oracle.setMaxChangeBps(250); // can tighten below the 5% ceiling
+        assertEq(oracle.maxChangeBps(), 250);
     }
 
     function test_SetMaxChangeBps_RevertOnZero() public {
@@ -229,13 +230,13 @@ contract IndexOracleTest is Test {
     function test_SetMaxChangeBps_RevertAboveCeiling() public {
         vm.prank(admin);
         vm.expectRevert(IndexOracle.IndexOracle_InvalidConfig.selector);
-        oracle.setMaxChangeBps(2_001); // hard ceiling 20% (2000 bps)
+        oracle.setMaxChangeBps(501); // hard ceiling 5% (500 bps)
     }
 
     function test_SetMaxChangeBps_RevertWhenUnauthorized() public {
         vm.prank(stranger);
         vm.expectRevert();
-        oracle.setMaxChangeBps(1_000);
+        oracle.setMaxChangeBps(250);
     }
 
     function test_SetGracePeriod_HappyPath() public {
@@ -264,8 +265,8 @@ contract IndexOracleTest is Test {
 
     function test_SetMinUpdateInterval_HappyPath() public {
         vm.prank(admin);
-        oracle.setMinUpdateInterval(30 minutes);
-        assertEq(oracle.minUpdateInterval(), 30 minutes);
+        oracle.setMinUpdateInterval(22 hours); // within [20 hours, 1 day]
+        assertEq(oracle.minUpdateInterval(), 22 hours);
     }
 
     function test_SetMinUpdateInterval_RevertAboveMax() public {
@@ -277,7 +278,7 @@ contract IndexOracleTest is Test {
     function test_SetMinUpdateInterval_RevertBelowFloor() public {
         vm.prank(admin);
         vm.expectRevert(IndexOracle.IndexOracle_InvalidConfig.selector);
-        oracle.setMinUpdateInterval(30 seconds);
+        oracle.setMinUpdateInterval(19 hours); // below the 20-hour hard floor
     }
 
     function test_SetMinUpdateInterval_RevertOnZero() public {
@@ -289,7 +290,7 @@ contract IndexOracleTest is Test {
     function test_SetMinUpdateInterval_RevertWhenUnauthorized() public {
         vm.prank(stranger);
         vm.expectRevert();
-        oracle.setMinUpdateInterval(30 minutes);
+        oracle.setMinUpdateInterval(22 hours);
     }
 
     // ----------------------------------------------------------------------
@@ -298,7 +299,7 @@ contract IndexOracleTest is Test {
 
     function testFuzz_UpdateIndex_WithinBounds(uint256 deltaBps) public {
         deltaBps = bound(deltaBps, 1, 500);
-        skip(1 hours + 1);
+        skip(20 hours + 1);
         uint256 newIndex = (INITIAL_INDEX * (10_000 + deltaBps)) / 10_000;
 
         vm.prank(updater);

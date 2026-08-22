@@ -7,7 +7,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IIndexOracle} from "./interfaces/IIndexOracle.sol";
 import {ISLT} from "./interfaces/ISLT.sol";
 
-/// @title SLT — Synthetic Liquid Token
+/// @title SLT — Synthetic Liquidity Token
 /// @author Blockxell
 /// @notice Permissionless ERC-20 token whose value tracks an off-chain performance index via oracle.
 /// @dev    Exposes index-based read-only metadata (pricePerShare, syntheticTotalValue,
@@ -33,6 +33,12 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     /// @notice Role allowed to pause/unpause transfers, mints, and burns in emergencies.
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
+    /// @notice Sentinel role used to permanently lock MINTER_ROLE administration.
+    /// @dev    Never granted to any address, and set as its own role-admin when
+    ///         lockMinterRole() is called. Once it becomes MINTER_ROLE's admin, no address
+    ///         can ever grant or revoke MINTER_ROLE again (members may still renounce).
+    bytes32 public constant MINTER_ADMIN_LOCK = keccak256("MINTER_ADMIN_LOCK");
+
     // -----------------------------------------------------------------------
     // Immutables / constants
     // -----------------------------------------------------------------------
@@ -45,6 +51,28 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     uint256 public constant INDEX_PRECISION = 1e18;
 
     // -----------------------------------------------------------------------
+    // Mutable state
+    // -----------------------------------------------------------------------
+
+    /// @notice Addresses adminBurn may burn from (treasury-controlled addresses only).
+    /// @dev    Managed by DEFAULT_ADMIN_ROLE via setBurnSource(). The issuer can NEVER burn
+    ///         from an address outside this list — holder balances are untouchable by design.
+    mapping(address => bool) public authorizedBurnSource;
+
+    /// @notice True once lockMinterRole() has been called. Irreversible.
+    bool public minterRoleLocked;
+
+    // -----------------------------------------------------------------------
+    // Events
+    // -----------------------------------------------------------------------
+
+    /// @notice Emitted when a burn-source authorization changes.
+    event BurnSourceSet(address indexed source, bool authorized);
+
+    /// @notice Emitted once when MINTER_ROLE administration is permanently locked.
+    event MinterRoleLocked(address indexed caller);
+
+    // -----------------------------------------------------------------------
     // Errors
     // -----------------------------------------------------------------------
 
@@ -53,6 +81,13 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
 
     /// @notice Reverts when a mint or burn amount is zero.
     error SLT_ZeroAmount();
+
+    /// @notice Reverts when adminBurn targets an address not on the authorized burn-source list.
+    /// @param from The unauthorized address.
+    error SLT_BurnSourceNotAuthorized(address from);
+
+    /// @notice Reverts when lockMinterRole() is called more than once.
+    error SLT_MinterRoleAlreadyLocked();
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -65,7 +100,7 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     /// @dev    MINTER_ROLE is intentionally NOT granted in the constructor. It must be granted
     ///         to the MintContract via a post-deployment Safe transaction.
     constructor(address admin, address pauser, address oracle)
-        ERC20("Synthetic Liquid Token", "SLT")
+        ERC20("Synthetic Liquidity Token", "SLT")
     {
         if (admin == address(0) || pauser == address(0) || oracle == address(0)) {
             revert SLT_ZeroAddress();
@@ -93,13 +128,45 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
 
     /// @inheritdoc ISLT
     /// @dev Does NOT pay out anything. Intended for treasury reconciliation only.
+    ///      `from` MUST be on the authorized burn-source list (treasury-controlled addresses) —
+    ///      the issuer cannot burn from arbitrary holder addresses.
     ///      Reverts with SLT_ZeroAddress if `from` is zero, SLT_ZeroAmount if `amount` is zero,
-    ///      or AccessControl error if caller lacks BURNER_ROLE. Note: not gated by Pausable —
-    ///      reconciliation must be possible even when transfers are paused.
+    ///      SLT_BurnSourceNotAuthorized if `from` is not authorized, or AccessControl error if
+    ///      caller lacks BURNER_ROLE. Note: not gated by Pausable — reconciliation must be
+    ///      possible even when transfers are paused.
     function adminBurn(address from, uint256 amount) external override onlyRole(BURNER_ROLE) {
         if (from == address(0)) revert SLT_ZeroAddress();
         if (amount == 0) revert SLT_ZeroAmount();
+        if (!authorizedBurnSource[from]) revert SLT_BurnSourceNotAuthorized(from);
         _burn(from, amount);
+    }
+
+    /// @notice Authorize or de-authorize an address as a valid adminBurn source.
+    /// @param source     Address to update (expected: Treasury Safe or other treasury-controlled address).
+    /// @param authorized True to allow adminBurn from `source`, false to disallow.
+    /// @dev    Restricted to DEFAULT_ADMIN_ROLE (Treasury Safe). This list is the code-level
+    ///         guarantee that holder balances are untouchable: burns can only ever originate
+    ///         from addresses the treasury itself controls and has explicitly listed.
+    function setBurnSource(address source, bool authorized) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (source == address(0)) revert SLT_ZeroAddress();
+        authorizedBurnSource[source] = authorized;
+        emit BurnSourceSet(source, authorized);
+    }
+
+    /// @notice Permanently lock MINTER_ROLE administration. One-way; callable once.
+    /// @dev    Intended deployment sequence: (1) deploy SLT, (2) grant MINTER_ROLE to
+    ///         MintContract, (3) call lockMinterRole(). After locking, MINTER_ROLE's role-admin
+    ///         is MINTER_ADMIN_LOCK — a sentinel role that is its own admin and is never granted —
+    ///         so no address (including DEFAULT_ADMIN_ROLE) can ever grant or revoke MINTER_ROLE.
+    ///         This makes the WP claim "a compromised admin multisig cannot bypass the mint flow"
+    ///         true at the code level. Trade-off: MintContract can never be replaced without
+    ///         deploying a new token.
+    function lockMinterRole() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (minterRoleLocked) revert SLT_MinterRoleAlreadyLocked();
+        minterRoleLocked = true;
+        _setRoleAdmin(MINTER_ROLE, MINTER_ADMIN_LOCK);
+        _setRoleAdmin(MINTER_ADMIN_LOCK, MINTER_ADMIN_LOCK);
+        emit MinterRoleLocked(msg.sender);
     }
 
     // -----------------------------------------------------------------------

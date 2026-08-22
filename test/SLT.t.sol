@@ -58,7 +58,7 @@ contract SLTTest is Test {
     // ----------------------------------------------------------------------
 
     function test_Metadata() public view {
-        assertEq(slt.name(), "Synthetic Liquid Token");
+        assertEq(slt.name(), "Synthetic Liquidity Token");
         assertEq(slt.symbol(), "SLT");
         assertEq(slt.decimals(), 18);
     }
@@ -101,21 +101,50 @@ contract SLTTest is Test {
     }
 
     // ----------------------------------------------------------------------
-    // adminBurn()
+    // adminBurn() — v1.1: burns only from authorized (treasury-controlled) sources
     // ----------------------------------------------------------------------
 
-    function test_AdminBurn_OnlyByBurnerRole() public {
+    /// @dev Helper: authorize `source` for adminBurn as the admin.
+    function _authorizeBurnSource(address source) internal {
+        vm.prank(admin);
+        slt.setBurnSource(source, true);
+    }
+
+    function test_AdminBurn_OnlyByBurnerRole_FromAuthorizedSource() public {
         vm.prank(minter);
         slt.mint(alice, 1_000 ether);
+        _authorizeBurnSource(alice); // test stand-in for a treasury-controlled address
 
         vm.prank(admin);
         slt.adminBurn(alice, 500 ether);
         assertEq(slt.balanceOf(alice), 500 ether);
     }
 
+    function test_AdminBurn_RevertOnUnauthorizedSource() public {
+        vm.prank(minter);
+        slt.mint(alice, 1_000 ether);
+        // alice NOT authorized as burn source — holder balances are untouchable.
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(SLT.SLT_BurnSourceNotAuthorized.selector, alice));
+        slt.adminBurn(alice, 1 ether);
+    }
+
+    function test_AdminBurn_RevertAfterDeauthorization() public {
+        vm.prank(minter);
+        slt.mint(alice, 1_000 ether);
+        _authorizeBurnSource(alice);
+        vm.prank(admin);
+        slt.setBurnSource(alice, false);
+
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(SLT.SLT_BurnSourceNotAuthorized.selector, alice));
+        slt.adminBurn(alice, 1 ether);
+    }
+
     function test_AdminBurn_RevertWhenUnauthorized() public {
         vm.prank(minter);
         slt.mint(alice, 1_000 ether);
+        _authorizeBurnSource(alice);
 
         vm.prank(alice);
         vm.expectRevert();
@@ -131,10 +160,71 @@ contract SLTTest is Test {
     function test_AdminBurn_RevertOnZeroAmount() public {
         vm.prank(minter);
         slt.mint(alice, 1_000 ether);
+        _authorizeBurnSource(alice);
 
         vm.prank(admin);
         vm.expectRevert(SLT.SLT_ZeroAmount.selector);
         slt.adminBurn(alice, 0);
+    }
+
+    function test_SetBurnSource_OnlyAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        slt.setBurnSource(alice, true);
+    }
+
+    function test_SetBurnSource_RevertOnZeroAddress() public {
+        vm.prank(admin);
+        vm.expectRevert(SLT.SLT_ZeroAddress.selector);
+        slt.setBurnSource(address(0), true);
+    }
+
+    // ----------------------------------------------------------------------
+    // lockMinterRole() — v1.1: minter set permanently frozen post-lock
+    // ----------------------------------------------------------------------
+
+    function test_LockMinterRole_BlocksFutureGrants() public {
+        vm.prank(admin);
+        slt.lockMinterRole();
+        assertTrue(slt.minterRoleLocked());
+
+        bytes32 minterRole = slt.MINTER_ROLE();
+        vm.prank(admin);
+        vm.expectRevert();
+        slt.grantRole(minterRole, alice);
+    }
+
+    function test_LockMinterRole_BlocksRevokes() public {
+        vm.prank(admin);
+        slt.lockMinterRole();
+
+        bytes32 minterRole = slt.MINTER_ROLE();
+        vm.prank(admin);
+        vm.expectRevert();
+        slt.revokeRole(minterRole, minter);
+        assertTrue(slt.hasRole(minterRole, minter));
+    }
+
+    function test_LockMinterRole_OnlyOnce() public {
+        vm.prank(admin);
+        slt.lockMinterRole();
+        vm.prank(admin);
+        vm.expectRevert(SLT.SLT_MinterRoleAlreadyLocked.selector);
+        slt.lockMinterRole();
+    }
+
+    function test_LockMinterRole_OnlyAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        slt.lockMinterRole();
+    }
+
+    function test_LockMinterRole_MintingStillWorksAfterLock() public {
+        vm.prank(admin);
+        slt.lockMinterRole();
+        vm.prank(minter);
+        slt.mint(alice, 1_000 ether);
+        assertEq(slt.balanceOf(alice), 1_000 ether);
     }
 
     // ----------------------------------------------------------------------
@@ -209,6 +299,7 @@ contract SLTTest is Test {
         vm.prank(minter);
         slt.mint(alice, 1_000 ether);
 
+        _authorizeBurnSource(alice);
         uint256 balanceBefore = address(slt).balance;
         vm.prank(admin);
         slt.adminBurn(alice, 500 ether);
@@ -218,6 +309,7 @@ contract SLTTest is Test {
     function test_AdminBurn_WorksWhilePaused() public {
         vm.prank(minter);
         slt.mint(alice, 1_000 ether);
+        _authorizeBurnSource(alice);
         vm.prank(pauser);
         slt.pause();
         // H-1: admin reconciliation burn must still succeed while transfers are paused.

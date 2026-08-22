@@ -11,9 +11,11 @@ import {IIndexOracle} from "./interfaces/IIndexOracle.sol";
 ///         (MintContract, DeFi integrators, risk engines).
 /// @dev    Index updates are submitted by the ORACLE_UPDATER_ROLE (Chainlink custom data feed
 ///         adapter or rotated backup signer). All updates are subject to:
-///           - per-update bounds check (default ±5%, hard ceiling 20%)
-///           - throttle floor (default 1 hour minimum interval)
+///           - per-update bounds check (±5%, which is also the hard ceiling — 500 bps)
+///           - throttle floor (default 20 hours minimum interval; hard floor 20 hours)
 ///           - guardian-controlled pause
+///         Combined, the bound and throttle guarantee the index cannot move more than ±5%
+///         per update on a ~daily cadence, matching the whitepaper's stated behavior.
 ///         The oracle never custodies funds; it only transports a single uint256 value
 ///         (pricePerShare, scaled to 1e18) and reports staleness state via isFresh().
 contract IndexOracle is IIndexOracle, AccessControl, Pausable {
@@ -59,7 +61,9 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     uint256 public override lastUpdateTimestamp;
 
     /// @notice Maximum allowed absolute change per update, in basis points (default 500 = 5%).
-    /// @dev    Adjustable by DEFAULT_ADMIN_ROLE up to a hard ceiling of 2000 bps (20%).
+    /// @dev    Adjustable by DEFAULT_ADMIN_ROLE up to a hard ceiling of 500 bps (5%) — the
+    ///         default IS the ceiling; the parameter can only be tightened, never loosened
+    ///         beyond the whitepaper's ±5% claim.
     uint256 public maxChangeBps;
 
     /// @notice Period after which the index is considered stale (default 1 day).
@@ -67,8 +71,10 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         and downstream consumers (MintContract) treat the oracle as paused.
     uint256 public gracePeriod;
 
-    /// @notice Minimum interval between consecutive successful updates (default 1 hour).
-    /// @dev    Throttle floor that prevents rapid-fire updates exploited by a coordinated burst.
+    /// @notice Minimum interval between consecutive successful updates (default 20 hours).
+    /// @dev    Throttle floor that prevents rapid-fire updates. The 20-hour hard floor supports
+    ///         a daily update cadence (with scheduling slack) while making the documented
+    ///         "±5% per day" behavior a code-level guarantee rather than an operational habit.
     uint256 public minUpdateInterval;
 
     // -----------------------------------------------------------------------
@@ -102,7 +108,7 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     /// @param guardian     Address granted GUARDIAN_ROLE (Treasury Safe).
     /// @param updater      Address granted ORACLE_UPDATER_ROLE (Chainlink adapter).
     /// @dev    Sets default safety parameters: maxChangeBps=500 (5%), gracePeriod=1 day,
-    ///         minUpdateInterval=1 hour. Emits an initial IndexUpdated event.
+    ///         minUpdateInterval=20 hours. Emits an initial IndexUpdated event.
     constructor(uint256 initialIndex, address admin, address guardian, address updater) {
         if (initialIndex == 0) revert IndexOracle_ZeroIndex();
         if (admin == address(0) || guardian == address(0) || updater == address(0)) {
@@ -111,9 +117,9 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
 
         pricePerShare = initialIndex;
         lastUpdateTimestamp = block.timestamp;
-        maxChangeBps = 500;          // 5.00% per update by default
+        maxChangeBps = 500;           // 5.00% per update (default = hard ceiling)
         gracePeriod = 1 days;         // staleness threshold
-        minUpdateInterval = 1 hours;  // throttle floor
+        minUpdateInterval = 20 hours; // throttle floor (default = hard floor; daily cadence)
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(GUARDIAN_ROLE, guardian);
@@ -139,7 +145,7 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
         uint256 previous = pricePerShare;
 
         // Throttle: enforce minimum interval between updates.
-        // Validator timestamp skew (~12s on Avalanche) is negligible vs the 1-hour default
+        // Validator timestamp skew (~12s on Avalanche) is negligible vs the 20-hour default
         // throttle floor; using block.timestamp here is safe by design.
         // forge-lint: disable-next-line(block-timestamp)
         // slither-disable-next-line timestamp
@@ -157,7 +163,7 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
         pricePerShare = newIndex;
         lastUpdateTimestamp = block.timestamp;
 
-        // deltaBps is bounded by maxChangeBps (≤ 2000 hard ceiling), well below int256.max.
+        // deltaBps is bounded by maxChangeBps (≤ 500 hard ceiling), well below int256.max.
         // Casting uint256 → int256 here is provably safe.
         // forge-lint: disable-next-line(unsafe-typecast)
         int256 signedDelta = newIndex > previous ? int256(deltaBps) : -int256(deltaBps);
@@ -218,28 +224,35 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     // -----------------------------------------------------------------------
 
     /// @notice Adjust the per-update bounds limit (basis points). Restricted to admin.
-    /// @param newMaxBps New bound, in basis points. Must be > 0 and <= 2000 (20% hard ceiling).
-    /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input.
+    /// @param newMaxBps New bound, in basis points. Must be > 0 and <= 500 (5% hard ceiling).
+    /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input. The ceiling equals
+    ///         the whitepaper's ±5% claim — admin can tighten the bound but never loosen it
+    ///         beyond the documented limit.
     function setMaxChangeBps(uint256 newMaxBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newMaxBps == 0 || newMaxBps > 2_000) revert IndexOracle_InvalidConfig(); // hard ceiling 20%
+        if (newMaxBps == 0 || newMaxBps > 500) revert IndexOracle_InvalidConfig(); // hard ceiling 5%
         maxChangeBps = newMaxBps;
     }
 
     /// @notice Adjust the staleness grace period. Restricted to admin.
-    /// @param newGracePeriod New grace period in seconds. Must be in [1 hour, 7 days].
-    /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input.
+    /// @param newGracePeriod New grace period in seconds. Must be in [1 day, 7 days].
+    /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input. Floor raised to
+    ///         1 day in v1.1: gracePeriod must always exceed the 20-hour minimum update
+    ///         interval, otherwise the oracle would read stale between routine updates and
+    ///         needlessly block minting.
     function setGracePeriod(uint256 newGracePeriod) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newGracePeriod < 1 hours || newGracePeriod > 7 days) revert IndexOracle_InvalidConfig();
+        if (newGracePeriod < 1 days || newGracePeriod > 7 days) revert IndexOracle_InvalidConfig();
         gracePeriod = newGracePeriod;
     }
 
     /// @notice Adjust the minimum interval between consecutive successful updates. Restricted to admin.
-    /// @param newInterval New interval in seconds. Must be in [1 minute, 1 day].
-    /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input. A hard floor of
-    ///         1 minute prevents the throttle from being disabled (which would permit block-by-block
-    ///         index drift even within the per-update bound).
+    /// @param newInterval New interval in seconds. Must be in [20 hours, 1 day].
+    /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input. The 20-hour hard
+    ///         floor makes the documented daily-cadence / ±5%-per-update-per-day behavior a
+    ///         code-level guarantee: even a compromised admin cannot re-enable rapid-fire
+    ///         updates to walk the index. Upper limit stays below gracePeriod's 1-day default
+    ///         so a normally-operating updater never trips staleness.
     function setMinUpdateInterval(uint256 newInterval) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newInterval < 1 minutes || newInterval > 1 days) revert IndexOracle_InvalidConfig();
+        if (newInterval < 20 hours || newInterval > 1 days) revert IndexOracle_InvalidConfig();
         minUpdateInterval = newInterval;
     }
 }
