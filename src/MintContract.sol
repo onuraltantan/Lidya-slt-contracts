@@ -5,6 +5,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ISLT} from "./interfaces/ISLT.sol";
 import {IIndexOracle} from "./interfaces/IIndexOracle.sol";
@@ -62,6 +63,13 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     /// @notice Maximum mint amount per single transaction in stablecoin units. Default $5,000,000.
     uint256 public maxMintAmount;
 
+    /// @notice Decimal count every whitelisted stablecoin must report.
+    /// @dev The conversion math (IndexOracle.stableToSLT) is hardcoded for 6-decimal stablecoins via
+    ///      SLT_TO_STABLE_SCALE = 1e12. Whitelisting a token with different decimals (e.g. an 18-dec
+    ///      "stable" such as DAI.e) would mis-scale mints by orders of magnitude, so setStablecoinAccepted
+    ///      enforces this at whitelist time (finding: decimals assumption).
+    uint8 public constant EXPECTED_STABLE_DECIMALS = 6;
+
     // -----------------------------------------------------------------------
     // Events
     // -----------------------------------------------------------------------
@@ -112,6 +120,10 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     /// @notice Reverts when mint limits are invalid (min == 0 or min > max).
     error MintContract_InvalidLimits();
 
+    /// @notice Reverts when whitelisting a stablecoin whose decimals != EXPECTED_STABLE_DECIMALS.
+    /// @param token The rejected token. @param actual The decimals it reported (0 if the call failed).
+    error MintContract_UnexpectedDecimals(address token, uint8 actual);
+
     // -----------------------------------------------------------------------
     // Constructor
     // -----------------------------------------------------------------------
@@ -135,7 +147,11 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
         uint256 _minMintAmount,
         uint256 _maxMintAmount
     ) {
-        if (sltToken == address(0) || oracle == address(0) || safe == address(0) || admin == address(0)) {
+        if (
+            sltToken == address(0) || oracle == address(0) || safe == address(0) || admin == address(0)
+                || pauser == address(0)
+        ) {
+            // pauser was previously unchecked — a zero pauser ships a mint contract nobody can pause.
             revert MintContract_ZeroAddress();
         }
         if (_minMintAmount == 0 || _minMintAmount > _maxMintAmount) {
@@ -205,6 +221,15 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     ///         Emits StablecoinWhitelistUpdated.
     function setStablecoinAccepted(address token, bool accepted) external onlyRole(CONFIG_ROLE) {
         if (token == address(0)) revert MintContract_ZeroAddress();
+        // When whitelisting, enforce the 6-decimal assumption the conversion math depends on.
+        // (Delisting is never blocked, so a mistakenly-listed token can always be removed.)
+        if (accepted) {
+            try IERC20Metadata(token).decimals() returns (uint8 dec) {
+                if (dec != EXPECTED_STABLE_DECIMALS) revert MintContract_UnexpectedDecimals(token, dec);
+            } catch {
+                revert MintContract_UnexpectedDecimals(token, 0);
+            }
+        }
         acceptedStablecoin[token] = accepted;
         emit StablecoinWhitelistUpdated(token, accepted);
     }

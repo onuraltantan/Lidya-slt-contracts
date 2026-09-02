@@ -99,6 +99,19 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     error IndexOracle_InvalidConfig();
 
     // -----------------------------------------------------------------------
+    // Parameter-change events (finding L-03: safety-critical setters were silent)
+    // -----------------------------------------------------------------------
+
+    /// @notice Emitted when maxChangeBps is changed.
+    event MaxChangeBpsUpdated(uint256 oldValue, uint256 newValue);
+
+    /// @notice Emitted when gracePeriod is changed.
+    event GracePeriodUpdated(uint256 oldValue, uint256 newValue);
+
+    /// @notice Emitted when minUpdateInterval is changed.
+    event MinUpdateIntervalUpdated(uint256 oldValue, uint256 newValue);
+
+    // -----------------------------------------------------------------------
     // Constructor
     // -----------------------------------------------------------------------
 
@@ -147,7 +160,6 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
         // Throttle: enforce minimum interval between updates.
         // Validator timestamp skew (~12s on Avalanche) is negligible vs the 20-hour default
         // throttle floor; using block.timestamp here is safe by design.
-        // forge-lint: disable-next-line(block-timestamp)
         // slither-disable-next-line timestamp
         if (block.timestamp < lastUpdateTimestamp + minUpdateInterval) {
             revert IndexOracle_TooSoon(lastUpdateTimestamp, minUpdateInterval);
@@ -179,7 +191,6 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     /// @dev    Validator timestamp skew (~12s on Avalanche) is negligible vs the 1-day
     ///         default grace period; block.timestamp comparison is safe by design.
     function isFresh() external view override returns (bool) {
-        // forge-lint: disable-next-line(block-timestamp)
         // slither-disable-next-line timestamp
         return !paused() && (block.timestamp - lastUpdateTimestamp) <= gracePeriod;
     }
@@ -230,6 +241,7 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         beyond the documented limit.
     function setMaxChangeBps(uint256 newMaxBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newMaxBps == 0 || newMaxBps > 500) revert IndexOracle_InvalidConfig(); // hard ceiling 5%
+        emit MaxChangeBpsUpdated(maxChangeBps, newMaxBps);
         maxChangeBps = newMaxBps;
     }
 
@@ -241,6 +253,7 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         needlessly block minting.
     function setGracePeriod(uint256 newGracePeriod) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newGracePeriod < 1 days || newGracePeriod > 7 days) revert IndexOracle_InvalidConfig();
+        emit GracePeriodUpdated(gracePeriod, newGracePeriod);
         gracePeriod = newGracePeriod;
     }
 
@@ -253,6 +266,7 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         so a normally-operating updater never trips staleness.
     function setMinUpdateInterval(uint256 newInterval) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newInterval < 20 hours || newInterval > 1 days) revert IndexOracle_InvalidConfig();
+        emit MinUpdateIntervalUpdated(minUpdateInterval, newInterval);
         minUpdateInterval = newInterval;
     }
 }

@@ -111,6 +111,12 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
         _grantRole(PAUSER_ROLE, pauser);
         _grantRole(BURNER_ROLE, admin); // Admin (Treasury Safe) is the burner.
         // MINTER_ROLE granted later, post-deployment, to the MintContract.
+
+        // Seal the MINTER_ADMIN_LOCK sentinel at construction: make it its own role-admin so it
+        // can never be granted to any address. Without this, DEFAULT_ADMIN could grant the sentinel
+        // to an address BEFORE lockMinterRole() runs, creating a permanent, unrevocable authority to
+        // grant MINTER_ROLE that survives the lock. Sealing here closes that window (finding H-01).
+        _setRoleAdmin(MINTER_ADMIN_LOCK, MINTER_ADMIN_LOCK);
     }
 
     // -----------------------------------------------------------------------
@@ -199,6 +205,20 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     /// @inheritdoc ISLT
     function pricePerShare() external view override returns (uint256) {
         return indexOracle.pricePerShare();
+    }
+
+    /// @inheritdoc ISLT
+    /// @notice Freshness passthrough. Integrators that read pricePerShare()/the metadata below off
+    ///         SLT directly (rather than off IndexOracle) MUST gate on this: the metadata functions
+    ///         return the last-known index even while the oracle is paused or stale (finding M-05).
+    function isFresh() external view override returns (bool) {
+        return indexOracle.isFresh();
+    }
+
+    /// @inheritdoc ISLT
+    /// @notice Timestamp of the oracle's last index update, exposed for integrator staleness checks.
+    function lastUpdateTimestamp() external view override returns (uint256) {
+        return indexOracle.lastUpdateTimestamp();
     }
 
     /// @notice Synthetic total value of supply in 18-decimal index units: totalSupply * index / 1e18.
