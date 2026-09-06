@@ -1,7 +1,32 @@
+# Foundry
 out/
 cache/
 broadcast/
+
+# Dependencies
 lib/
-.env
 node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Build artifacts
+*.log
+coverage.json
+lcov.info
+
+# Slither / Mythril
+slither-report.json
+mythril-report.json
