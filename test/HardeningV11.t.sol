@@ -62,6 +62,40 @@ contract HardeningV11Test is Test {
         assertFalse(slt.burnSourceLocked());
     }
 
+    function test_M01_BurnSourceCount_TracksSet() public {
+        assertEq(slt.burnSourceCount(), 1, "only Treasury Safe at construction");
+        vm.startPrank(safe);
+        slt.setBurnSource(alice, true);
+        assertEq(slt.burnSourceCount(), 2);
+        slt.setBurnSource(alice, true); // idempotent: no double count
+        assertEq(slt.burnSourceCount(), 2);
+        slt.setBurnSource(alice, false);
+        assertEq(slt.burnSourceCount(), 1);
+        slt.setBurnSource(alice, false); // idempotent: no underflow
+        assertEq(slt.burnSourceCount(), 1);
+        vm.stopPrank();
+    }
+
+    function test_M01_LockBurnSource_RefusesUnlessExactlyOneSource() public {
+        vm.startPrank(safe);
+        slt.setBurnSource(alice, true);
+        vm.expectRevert(abi.encodeWithSelector(SLT.SLT_BurnSourceCountNotOne.selector, 2));
+        slt.lockBurnSource();
+        slt.setBurnSource(alice, false);
+        slt.lockBurnSource(); // exactly {Treasury Safe} -> ok
+        vm.stopPrank();
+        assertTrue(slt.burnSourceLocked());
+        assertEq(slt.burnSourceCount(), 1);
+    }
+
+    function test_M01_LockBurnSource_RefusesWhenTreasuryRemoved() public {
+        vm.startPrank(safe);
+        slt.setBurnSource(safe, false);
+        vm.expectRevert(abi.encodeWithSelector(SLT.SLT_BurnSourceCountNotOne.selector, 0));
+        slt.lockBurnSource();
+        vm.stopPrank();
+    }
+
     function test_M01_LockBurnSource_OnlyAdmin() public {
         vm.prank(stranger);
         vm.expectRevert();

@@ -33,7 +33,9 @@ If you want submodules tracked under `lib/`:
 ```sh
 git init
 git submodule add https://github.com/OpenZeppelin/openzeppelin-contracts lib/openzeppelin-contracts
+git -C lib/openzeppelin-contracts checkout v5.6.1   # must match foundry.lock
 git submodule add https://github.com/foundry-rs/forge-std lib/forge-std
+git -C lib/forge-std checkout v1.16.2               # must match foundry.lock
 ```
 
 ## 3. Verify the build

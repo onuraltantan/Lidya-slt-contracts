@@ -151,6 +151,7 @@ contract SLTInvariantsTest is StdInvariant, Test {
             assertFalse(slt.authorizedBurnSource(a), "holder became a burn source");
         }
         assertTrue(slt.authorizedBurnSource(admin), "Treasury Safe dropped from burn sources");
+        assertEq(slt.burnSourceCount(), 1, "burn-source set is not exactly {Treasury Safe}");
     }
 
     // ----------------------------------------------------------------------

@@ -72,8 +72,9 @@ The user-facing ERC-20 token.
     is its own admin from the constructor, so it can never be granted to anyone (H-01 / L-04).
   - `BURNER_ROLE` — Treasury Safe only; reconciliation and erroneous-mint correction. `adminBurn`
     only works on addresses in `authorizedBurnSource`; the Treasury Safe is authorized at construction
-    and `lockBurnSource()` (one-way) seals the set post-deploy. After the lock **no role can ever burn a
-    holder balance** (M-01) — this is enforced in code, not policy.
+    and `lockBurnSource()` (one-way) seals the set post-deploy. The lock **refuses unless the set is exactly
+    one address** (`burnSourceCount == 1`), so a pre-lock `setBurnSource` addition cannot be frozen in by
+    mistake. After the lock **no role can ever burn a holder balance** (M-01) — enforced in code, not policy.
   - `PAUSER_ROLE` — Treasury Safe; emergency pause for holder transfers and mints. **`adminBurn` is
     not pausable** (reconciliation must work while paused).
 - **Index-based read-only metadata** (18-dec index units, deliberately *not* ERC-4626 names):
@@ -123,7 +124,7 @@ Off-the-shelf Gnosis Safe deployed via `safe.global` UI.
 
 | Role                    | Holder         | Authority                                    |
 | ----------------------- | -------------- | -------------------------------------------- |
-| `DEFAULT_ADMIN_ROLE`    | Treasury Safe  | Manage role grants (except MINTER after lock); propose/execute Treasury Safe change (24h) |
+| `DEFAULT_ADMIN_ROLE`    | Treasury Safe  | Manage role grants (except MINTER after lock); propose → 24h → execute, or cancel, Treasury Safe change (M-03) |
 | `MINTER_ROLE` (SLT)     | MintContract   | Mint SLT to depositors — sole holder, sealed by `lockMinterRole(MintContract)` |
 | `BURNER_ROLE` (SLT)     | Treasury Safe  | Reconciliation burns from `authorizedBurnSource` only (= Treasury Safe, sealed by `lockBurnSource`) |
 | `PAUSER_ROLE`           | Treasury Safe  | Emergency pause                              |
@@ -163,9 +164,9 @@ Off-the-shelf Gnosis Safe deployed via `safe.global` UI.
 1. `SLT.grantRole(MINTER_ROLE, MintContract)`
 2. `MintContract.setStablecoinAccepted(USDC/USDT, true)`
 3. `IndexOracle.grantRole(ORACLE_UPDATER_ROLE, adapter)` + revoke from deployer
-4. Verify on-chain: `minterCount() == 1`, `hasRole(MINTER_ROLE, MintContract)`, `authorizedBurnSource(Safe)`
+4. Verify on-chain: `minterCount() == 1`, `hasRole(MINTER_ROLE, MintContract)`, `burnSourceCount() == 1`, `authorizedBurnSource(Safe) == true`
 5. `SLT.lockMinterRole(MintContract)` — one-way
-6. `SLT.lockBurnSource()` — one-way
+6. `SLT.lockBurnSource()` — one-way; reverts unless `burnSourceCount() == 1`
 
 ## References
 

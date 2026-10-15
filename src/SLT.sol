@@ -66,6 +66,11 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     /// @dev    After locking, the authorized burn-source set can never change again (finding M-01).
     bool public burnSourceLocked;
 
+    /// @notice Number of addresses currently in `authorizedBurnSource` (maintained by setBurnSource).
+    /// @dev    `authorizedBurnSource` is a mapping and cannot be enumerated on-chain, so this counter
+    ///         is what lets lockBurnSource() refuse to seal anything other than a single source.
+    uint256 public burnSourceCount;
+
     /// @notice Number of addresses currently holding MINTER_ROLE (maintained via role hooks).
     /// @dev    Lets lockMinterRole(expectedMinter) refuse to seal a minter set that is not exactly
     ///         {expectedMinter} (finding L-04). AccessControlEnumerable is deliberately avoided to
@@ -116,6 +121,10 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     /// @notice Reverts when lockBurnSource() is called more than once.
     error SLT_BurnSourceAlreadyLocked();
 
+    /// @notice Reverts when lockBurnSource() is called while the burn-source set is not exactly one address.
+    /// @param count Current number of authorized burn sources.
+    error SLT_BurnSourceCountNotOne(uint256 count);
+
     // -----------------------------------------------------------------------
     // Constructor
     // -----------------------------------------------------------------------
@@ -123,7 +132,7 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     /// @notice Deploy SLT with initial admin, pauser, and oracle wiring.
     /// @param admin  Address granted DEFAULT_ADMIN_ROLE and BURNER_ROLE (Treasury Safe).
     /// @param pauser Address granted PAUSER_ROLE (Treasury Safe).
-    /// @param oracle IndexOracle contract address used for ERC-4626 metadata.
+    /// @param oracle IndexOracle contract address used for index-based read-only metadata.
     /// @dev    MINTER_ROLE is intentionally NOT granted in the constructor. It must be granted
     ///         to the MintContract via a post-deployment Safe transaction.
     constructor(
@@ -145,6 +154,7 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
         // seals this set immediately with lockBurnSource() (finding M-01) so that the whitepaper
         // claim "holder balances are untouchable by the issuer" is enforced in code, not policy.
         authorizedBurnSource[admin] = true;
+        burnSourceCount = 1;
         emit BurnSourceSet(admin, true);
 
         // Seal the MINTER_ADMIN_LOCK sentinel at construction: make it its own role-admin so it
@@ -200,18 +210,24 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (burnSourceLocked) revert SLT_BurnSourceLocked();
         if (source == address(0)) revert SLT_ZeroAddress();
+        bool current = authorizedBurnSource[source];
+        if (authorized && !current) burnSourceCount += 1;
+        if (!authorized && current) burnSourceCount -= 1;
         authorizedBurnSource[source] = authorized;
         emit BurnSourceSet(source, authorized);
     }
 
     /// @notice Permanently seal the authorized burn-source set. One-way; callable once.
-    /// @dev    After this call setBurnSource() always reverts, so adminBurn can only ever burn from
-    ///         the addresses listed at lock time (Treasury Safe, by the intended deployment flow).
+    /// @dev    Refuses unless the set is exactly ONE address (`burnSourceCount == 1`) — by the intended
+    ///         deployment flow that address is the Treasury Safe, which is the only entry since the
+    ///         constructor. After this call setBurnSource() always reverts, so adminBurn can only ever
+    ///         burn from that single address.
     ///         No role — including DEFAULT_ADMIN_ROLE or a freshly granted BURNER_ROLE — can widen
     ///         the set afterwards. This is the code-level guarantee behind "holder balances are
     ///         untouchable" (finding M-01).
     function lockBurnSource() external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (burnSourceLocked) revert SLT_BurnSourceAlreadyLocked();
+        if (burnSourceCount != 1) revert SLT_BurnSourceCountNotOne(burnSourceCount);
         burnSourceLocked = true;
         emit BurnSourceLocked(msg.sender);
     }
@@ -251,7 +267,7 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
         _pause();
     }
 
-    /// @notice Resume transfers, mints, and burns. Restricted to PAUSER_ROLE.
+    /// @notice Resume holder transfers and mint(). Restricted to PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
     }

@@ -68,9 +68,17 @@ Target: ≥95% line coverage before audit submission.
 slither . --filter-paths "lib|test|script" --exclude-dependencies
 ```
 
-## Deployment (Fuji testnet)
+## Deployment
 
-1. Deploy a Gnosis Safe via [safe.global](https://safe.global) on Fuji. Add 5 signers, set threshold to 3.
+**Fuji testnet (all roles on the deployer, lock sequence executed by the script):**
+
+```sh
+forge script script/DeployFuji.s.sol:DeployFuji --rpc-url $FUJI_RPC_URL --broadcast --slow
+```
+
+**Mainnet (Safe-driven):**
+
+1. Deploy a Gnosis Safe via [safe.global](https://safe.global). Add 5 signers, set threshold to 3.
 2. Copy `.env.example` to `.env` and fill in:
    - `DEPLOYER_PRIVATE_KEY`
    - `TREASURY_SAFE_ADDRESS`
@@ -80,14 +88,19 @@ slither . --filter-paths "lib|test|script" --exclude-dependencies
 3. Run the deploy script:
 
 ```sh
-forge script script/Deploy.s.sol --rpc-url fuji --broadcast --verify
+forge script script/Deploy.s.sol --rpc-url avalanche --broadcast --verify
 ```
 
-4. Post-deploy, execute these via Safe transaction:
-   - `SLT.grantRole(MINTER_ROLE, MintContract)`
-   - `MintContract.setStablecoinAccepted(USDC, true)`
-   - `MintContract.setStablecoinAccepted(USDT, true)`
-   - `IndexOracle.grantRole(ORACLE_UPDATER_ROLE, ChainlinkAdapter)` then `revokeRole` from deployer
+4. Post-deploy, execute these via Safe transaction (order matters; 7–8 are one-way):
+   1. `SLT.grantRole(MINTER_ROLE, MintContract)`
+   2. `MintContract.setStablecoinAccepted(USDC, true)`
+   3. `MintContract.setStablecoinAccepted(USDT, true)`
+   4. `IndexOracle.grantRole(ORACLE_UPDATER_ROLE, ChainlinkAdapter)` then `revokeRole` from deployer
+   5. Verify on-chain: `SLT.minterCount() == 1`, `SLT.hasRole(MINTER_ROLE, MintContract)`,
+      `SLT.burnSourceCount() == 1`, `SLT.authorizedBurnSource(Safe) == true`
+   6. `SLT.lockMinterRole(MintContract)` — one-way (H-01 / L-04)
+   7. `SLT.lockBurnSource()` — one-way; refuses unless the set is exactly one address (M-01)
+   8. Treasury Safe changes later: `setTreasurySafe(new)` → wait 24h → `executeTreasurySafe()` (or `cancelTreasurySafe()`) (M-03)
 
 ## Repo Layout
 

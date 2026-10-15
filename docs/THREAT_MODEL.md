@@ -73,7 +73,7 @@ SLT (ERC-20 + index-based view-only metadata; no ERC-4626 surface)
 |---|---|
 | **Vector** | Compromise of 3 or more of the 5 Treasury Safe signers, granting unrestricted access to all admin roles. |
 | **Likelihood** | Very Low (3-of-5 quorum across diversified geographic and organizational signers). |
-| **Severity** | High — quorum holder can pause/unpause, change oracle parameters within hard bounds, and *propose* a Treasury Safe change. It **cannot** grant MINTER_ROLE after `lockMinterRole` (H-01 fix: sentinel sealed in constructor), **cannot** burn holder balances after `lockBurnSource` (M-01), and a Treasury Safe redirect only takes effect 24h after proposal and is cancellable (M-03). |
+| **Severity** | High — quorum holder can pause/unpause, change oracle parameters within hard bounds, and *propose* a Treasury Safe change. It **cannot** grant MINTER_ROLE after `lockMinterRole` (H-01 fix: sentinel sealed in constructor), **cannot** burn holder balances after `lockBurnSource` (M-01; the lock itself refuses unless the burn-source set is exactly one address), and a Treasury Safe redirect only takes effect 24h after proposal and is cancellable (M-03). |
 | **Mitigation** | Code-level: `lockMinterRole(expectedMinter)`, `lockBurnSource()`, 24h treasury timelock. Operational: diversified 3-of-5 signer set as listed in ARCHITECTURE §4 (founder, Blockxell engineering, Blockxell operations, Lidya treasury manager rep, independent external signer). Safe transactions are public on-chain. |
 | **Residual risk** | Out of scope for smart contract audit; mitigated through operational and key-management hygiene. |
 
@@ -183,7 +183,7 @@ The following are explicitly outside the V1 smart contract audit scope:
 
 All other v1.0/v1.1 public signatures are unchanged. `setTreasurySafe(address)` keeps its signature; semantics are now propose-only (M-03).
 
-**Additions in v1.1-audit** (full list in `docs/ABI_BASELINE_v1.1.txt`): `SLT.lockBurnSource()`, `SLT.burnSourceLocked()`, `SLT.minterCount()`, `MintContract.executeTreasurySafe()`, `MintContract.cancelTreasurySafe()`, `MintContract.pendingTreasurySafe()`, `MintContract.pendingTreasurySafeExecutableAt()`, `MintContract.TREASURY_SAFE_DELAY()`, `IndexOracle.STALENESS_SLACK()`.
+**Additions in v1.1-audit** (full list in `docs/ABI_BASELINE_v1.1.txt`): `SLT.lockBurnSource()`, `SLT.burnSourceLocked()`, `SLT.burnSourceCount()`, `SLT.minterCount()`, `MintContract.executeTreasurySafe()`, `MintContract.cancelTreasurySafe()`, `MintContract.pendingTreasurySafe()`, `MintContract.pendingTreasurySafeExecutableAt()`, `MintContract.TREASURY_SAFE_DELAY()`, `IndexOracle.STALENESS_SLACK()`.
 
 ---
 
