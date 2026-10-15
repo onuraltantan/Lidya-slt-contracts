@@ -13,4 +13,12 @@ interface ISLT {
 
     /// @notice Returns the current SLT index from the configured oracle.
     function pricePerShare() external view returns (uint256);
+
+    /// @notice Returns whether the underlying oracle is currently fresh (passthrough).
+    /// @dev Integrators pricing off SLT must gate on this; the index reads return last-known values
+    ///      even while the oracle is paused or stale.
+    function isFresh() external view returns (bool);
+
+    /// @notice Returns the underlying oracle's last index-update timestamp (passthrough).
+    function lastUpdateTimestamp() external view returns (uint256);
 }
