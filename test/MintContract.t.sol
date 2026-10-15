@@ -15,7 +15,10 @@ contract MockUSDC is ERC20 {
         return 6;
     }
 
-    function mint(address to, uint256 amount) external {
+    function mint(
+        address to,
+        uint256 amount
+    ) external {
         _mint(to, amount);
     }
 }
@@ -32,16 +35,25 @@ contract ReentrantUSDC is ERC20 {
         return 6;
     }
 
-    function mint(address to, uint256 amount) external {
+    function mint(
+        address to,
+        uint256 amount
+    ) external {
         _mint(to, amount);
     }
 
-    function arm(MintContract t) external {
+    function arm(
+        MintContract t
+    ) external {
         target = t;
         attackArmed = true;
     }
 
-    function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public override returns (bool) {
         if (attackArmed && address(target) != address(0)) {
             attackArmed = false; // disarm to prevent infinite recursion in revert path
             // This nested call should revert with ReentrancyGuardReentrantCall().
@@ -71,8 +83,7 @@ contract MintContractTest is Test {
         slt = new SLT(admin, pauser, address(oracle));
         usdc = new MockUSDC();
 
-        mintContract =
-            new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT);
+        mintContract = new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT);
 
         vm.startPrank(admin);
         slt.grantRole(slt.MINTER_ROLE(), address(mintContract));
@@ -279,7 +290,11 @@ contract MintContractTest is Test {
     function test_SetTreasurySafe_HappyPath() public {
         address newSafe = address(0xC0FFEE);
         vm.prank(admin);
-        mintContract.setTreasurySafe(newSafe);
+        mintContract.setTreasurySafe(newSafe); // M-03: proposes; takes effect after 24h
+        assertEq(mintContract.treasurySafe(), treasurySafe);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin);
+        mintContract.executeTreasurySafe();
         assertEq(mintContract.treasurySafe(), newSafe);
 
         // New mints flow to the new safe.

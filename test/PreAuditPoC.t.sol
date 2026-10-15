@@ -10,8 +10,17 @@ import {MintContract} from "../src/MintContract.sol";
 
 contract MockStable is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
-    function decimals() public pure override returns (uint8) {return 6;}
-    function mint(address to, uint256 amt) external {_mint(to, amt);}
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function mint(
+        address to,
+        uint256 amt
+    ) external {
+        _mint(to, amt);
+    }
 }
 
 /// @notice Independent proof-of-concept tests for the second-pass review of SLT v1.1-prereview.
@@ -21,10 +30,10 @@ contract PreAuditPoC is Test {
     MintContract mintC;
     MockStable usdc;
 
-    address safe    = makeAddr("treasurySafe");
+    address safe = makeAddr("treasurySafe");
     address updater = makeAddr("updater");
-    address alice   = makeAddr("alice");     // ordinary holder
-    address evil    = makeAddr("evilKey");   // key quietly pre-loaded before the lock
+    address alice = makeAddr("alice"); // ordinary holder
+    address evil = makeAddr("evilKey"); // key quietly pre-loaded before the lock
 
     bytes32 MINTER;
     bytes32 LOCK;
@@ -34,11 +43,11 @@ contract PreAuditPoC is Test {
 
     function setUp() public {
         oracle = new IndexOracle(1e18, safe, safe, updater);
-        slt    = new SLT(safe, safe, address(oracle));
-        mintC  = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT);
-        usdc   = new MockStable();
+        slt = new SLT(safe, safe, address(oracle));
+        mintC = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT);
+        usdc = new MockStable();
         MINTER = slt.MINTER_ROLE();
-        LOCK   = slt.MINTER_ADMIN_LOCK();
+        LOCK = slt.MINTER_ADMIN_LOCK();
 
         // Canonical deployment wiring, exactly as documented (README step 4 / runbook).
         vm.startPrank(safe);
@@ -64,7 +73,7 @@ contract PreAuditPoC is Test {
 
         // The documented lock sequence still works end to end.
         vm.prank(safe);
-        slt.lockMinterRole();
+        slt.lockMinterRole(address(mintC));
         assertTrue(slt.minterRoleLocked(), "lock flag set");
         assertTrue(slt.hasRole(MINTER, address(mintC)), "MintContract still minter");
 
@@ -79,7 +88,7 @@ contract PreAuditPoC is Test {
     function test_PoC_SentinelUnheldBeforeAndAfterLock() public {
         assertFalse(slt.hasRole(LOCK, safe), "unheld pre-lock");
         vm.prank(safe);
-        slt.lockMinterRole();
+        slt.lockMinterRole(address(mintC));
         assertFalse(slt.hasRole(LOCK, safe), "unheld post-lock");
     }
 
@@ -87,25 +96,15 @@ contract PreAuditPoC is Test {
     // PoC 2 — M-02: the oracle can be configured into a permanently self-halting state
     // ------------------------------------------------------------------
     function test_PoC_SelfHaltingOracleConfig() public {
+        // v1.1-audit (M-02 fix): the self-halting pair is no longer configurable. gracePeriod must
+        // stay >= minUpdateInterval + 4h, so raising the interval to the 1-day ceiling while grace
+        // sits at its 1-day floor is rejected.
         vm.startPrank(safe);
-        oracle.setGracePeriod(1 days);        // floor of the allowed range
-        oracle.setMinUpdateInterval(1 days);  // ceiling of the allowed range -- both legal
+        oracle.setGracePeriod(1 days);
+        vm.expectRevert(IndexOracle.IndexOracle_InvalidConfig.selector);
+        oracle.setMinUpdateInterval(1 days);
         vm.stopPrank();
-
-        // Earliest permissible next update lands exactly on the staleness edge.
-        vm.warp(block.timestamp + 1 days);
-        vm.prank(updater);
-        oracle.updateIndex(1.01e18);
-
-        // One second of operational slippage and every mint reverts network-wide.
-        vm.warp(block.timestamp + 1 days + 1);
-        assertFalse(oracle.isFresh(), "oracle stale");
-
-        vm.startPrank(alice);
-        usdc.approve(address(mintC), MIN_MINT);
-        vm.expectRevert(MintContract.MintContract_OracleStale.selector);
-        mintC.mintSLT(address(usdc), MIN_MINT);
-        vm.stopPrank();
+        assertGe(oracle.gracePeriod(), oracle.minUpdateInterval() + 4 hours, "guard holds");
     }
 
     // ------------------------------------------------------------------
@@ -119,7 +118,7 @@ contract PreAuditPoC is Test {
         assertGt(got, 0);
 
         vm.startPrank(safe);
-        slt.setBurnSource(alice, true);   // no constraint on `source`
+        slt.setBurnSource(alice, true); // no constraint on `source`
         slt.adminBurn(alice, got);
         vm.stopPrank();
         assertEq(slt.balanceOf(alice), 0, "holder wiped, nothing paid out");
@@ -130,7 +129,8 @@ contract PreAuditPoC is Test {
     // ------------------------------------------------------------------
     function test_PoC_IndexWalkHasNoAbsoluteBand() public {
         uint256 t = block.timestamp;
-        for (uint256 i = 0; i < 36; i++) {           // 36 updates ~= 30 days at the 20h floor
+        // 36 updates ~= 30 days at the 20h floor
+        for (uint256 i = 0; i < 36; i++) {
             t += 20 hours;
             vm.warp(t);
             uint256 next = oracle.pricePerShare() * 95 / 100;

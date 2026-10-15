@@ -1,9 +1,9 @@
 # SLT V1 — Threat Model
 
-**Status**: Pre-audit (Halborn handoff document)
+**Status**: v1.1-audit — frozen for external audit (RFQ: Halborn / Zealynx / Cantina)
 **Scope**: V1 contracts in `src/` — `IndexOracle.sol`, `SLT.sol`, `MintContract.sol`, plus the Treasury Safe (Gnosis Safe v1.4, no custom code)
 **Network**: Avalanche C-Chain (43114), Fuji testnet (43113)
-**Last updated**: 2026-05-04
+**Last updated**: 2026-10-15 (v1.1-audit: H-01, M-01, M-02, M-03, L-04 fixed; M-04 accepted)
 
 ---
 
@@ -21,7 +21,7 @@ MintContract  ─── pulls stable, atomic forward ───▶  Treasury Safe
 IndexOracle  ◀── daily push ── Chainlink Adapter ── signed off-chain SPR signal
    │
    ▼
-SLT (ERC-20 + ERC-4626 view-only metadata)
+SLT (ERC-20 + index-based view-only metadata; no ERC-4626 surface)
    │ mint to user
 ```
 
@@ -54,7 +54,7 @@ SLT (ERC-20 + ERC-4626 view-only metadata)
 | **Likelihood** | Low (whitelisted stablecoins are USDC and USDT.e, both audited and standards-compliant). |
 | **Severity** | High if exploited. |
 | **Mitigation** | `mintSLT()` is decorated with `nonReentrant` (OZ ReentrancyGuard). Whitelist control by CONFIG_ROLE means a malicious token cannot be added without 3-of-5 multisig consent. Invariant tests include a `ReentrantUSDC` mock that confirms re-entry reverts. |
-| **Test coverage** | `test_Mint_RevertOnReentrancy` (unit), 8 invariant tests including USDC/USDT balance flow. |
+| **Test coverage** | `test_Mint_RevertOnReentrancy` (unit), 11 invariant tests including USDC/USDT balance flow. |
 
 ### 3.2 Oracle Manipulation
 
@@ -63,9 +63,9 @@ SLT (ERC-20 + ERC-4626 view-only metadata)
 | **Vector** | A compromised ORACLE_UPDATER_ROLE signer pushes an arbitrary index value to inflate or deflate SLT pricing relative to underlying performance. |
 | **Likelihood** | Low (HSM-managed key, Chainlink BUILD operational standards). |
 | **Severity** | High — could distort mint pricing and downstream DeFi market valuations. |
-| **Mitigation** | Three layers:<br>1. **Per-update bounds**: `IndexOracle.updateIndex()` reverts if `|new − prev| / prev > maxChangeBps` (default 500 bps = 5%; hard ceiling 2000 bps = 20%).<br>2. **Throttle**: minimum 1-hour interval between updates blocks rapid-fire manipulation bursts.<br>3. **Guardian pause**: GUARDIAN_ROLE (Treasury Safe) can call `pause(reason)` to halt all updates pending investigation. |
+| **Mitigation** | Three layers:<br>1. **Per-update bounds**: `IndexOracle.updateIndex()` reverts if `|new − prev| / prev > maxChangeBps` (default 500 bps = 5% = hard ceiling; admin may only lower it).<br>2. **Throttle**: `minUpdateInterval` floor 20 hours (default), ceiling 1 day — one bounded step per ~day; `gracePeriod ≥ minUpdateInterval + 4h` is enforced so the throttle can never starve `isFresh()` (M-02).<br>3. **Guardian pause**: GUARDIAN_ROLE (Treasury Safe) can call `pause(reason)` to halt all updates pending investigation. |
 | **Test coverage** | `test_UpdateIndex_RevertOnExceedingMaxDelta`, `test_UpdateIndex_RevertOnTooFrequent`, `test_UpdateIndex_RevertOnUnauthorized`, `test_Pause_BlocksUpdates`, plus invariant `invariant_OracleNeverZero`. |
-| **Residual risk** | Within the ±5% per-day bound, a compromised signer can still push a legitimate-looking but incorrect value. The Treasury Safe's GUARDIAN_ROLE response pattern is documented in operational runbooks. |
+| **Residual risk** | Within the ±5% **per-update** bound (one update per ≥20h), a compromised signer can still push a legitimate-looking but incorrect value, and a sustained walk compounds (36 max-steps ≈ 30 days → ≈0.16× or ≈5.8× — **M-04, accepted**, see §5). The Treasury Safe's GUARDIAN_ROLE response pattern (pause within one update interval) is the control; it is documented in operational runbooks. |
 
 ### 3.3 Multisig Compromise (Treasury Safe)
 
@@ -73,8 +73,8 @@ SLT (ERC-20 + ERC-4626 view-only metadata)
 |---|---|
 | **Vector** | Compromise of 3 or more of the 5 Treasury Safe signers, granting unrestricted access to all admin roles. |
 | **Likelihood** | Very Low (3-of-5 quorum across diversified geographic and organizational signers). |
-| **Severity** | Catastrophic — quorum holder can grant MINTER_ROLE, change Treasury Safe target, redirect deposits, pause/unpause anything. |
-| **Mitigation** | Diversified signer set: founder (Onur Altan Tan), 2 Blockxell engineering, 1 Treasury Manager representative, 1 independent (intended: Hex Trust or Ogier representative). Safe transactions are public on-chain. |
+| **Severity** | High — quorum holder can pause/unpause, change oracle parameters within hard bounds, and *propose* a Treasury Safe change. It **cannot** grant MINTER_ROLE after `lockMinterRole` (H-01 fix: sentinel sealed in constructor), **cannot** burn holder balances after `lockBurnSource` (M-01), and a Treasury Safe redirect only takes effect 24h after proposal and is cancellable (M-03). |
+| **Mitigation** | Code-level: `lockMinterRole(expectedMinter)`, `lockBurnSource()`, 24h treasury timelock. Operational: diversified signer set: founder (Onur Altan Tan), 2 Blockxell engineering, 1 Treasury Manager representative, 1 independent (intended: Hex Trust or Ogier representative). Safe transactions are public on-chain. |
 | **Residual risk** | Out of scope for smart contract audit; mitigated through operational and key-management hygiene. |
 
 ### 3.4 Stablecoin Behavior Anomalies
@@ -92,7 +92,7 @@ SLT (ERC-20 + ERC-4626 view-only metadata)
 | Item | Detail |
 |---|---|
 | **Vector** | A user observes a pending oracle update transaction in mempool predicting a positive index move and front-runs with a mint at the lower current index, then sells immediately after the update. |
-| **Likelihood** | Low — index moves are bounded at ±5% per day, capped daily through smoothing in the off-chain engine. Practical capture is ≤5% gross minus DEX fees and gas. |
+| **Likelihood** | Low — index moves are bounded at ±5% per update with a ≥20h interval, capped daily through smoothing in the off-chain engine. Practical capture is ≤5% gross minus DEX fees and gas. |
 | **Severity** | Low — does not harm protocol balance integrity, only marginal value extraction from the user's own funds. |
 | **Mitigation** | The `Minted` event records the exact `indexUsed`, providing transparency. Avalanche C-Chain has shorter block times (~2s) and lower mempool-visibility windows than Ethereum, reducing the practical attack window. The mint cap (`maxMintAmount = $5M per tx`) bounds individual capture. |
 | **Residual risk** | Accepted as a normal market-microstructure phenomenon, comparable to sUSDe and other index-tracking tokens. |
@@ -124,8 +124,8 @@ SLT (ERC-20 + ERC-4626 view-only metadata)
 | **Vector** | An unauthorized address attempts to grant itself or an accomplice MINTER_ROLE / BURNER_ROLE / CONFIG_ROLE to mint SLT, burn user tokens, or whitelist a malicious stablecoin. |
 | **Likelihood** | Very low — role grants require DEFAULT_ADMIN_ROLE, held only by the Treasury Safe. |
 | **Severity** | High if exploited. |
-| **Mitigation** | OpenZeppelin AccessControl pattern. DEFAULT_ADMIN_ROLE is granted only to the Treasury Safe in constructor. No backdoor admin paths exist. Constructor revert tests confirm zero-address admin is rejected. |
-| **Test coverage** | `test_Constructor_RevertOnZeroAdmin`, role authorization tests on every admin function (`test_Set*_RevertWhenUnauthorized`). |
+| **Mitigation** | OpenZeppelin AccessControl pattern. DEFAULT_ADMIN_ROLE is granted only to the Treasury Safe in constructor. **History (H-01, Moment Research Sep 2026):** in `v1.1-prereview` the `MINTER_ADMIN_LOCK` sentinel could be granted by DEFAULT_ADMIN *before* `lockMinterRole()`, creating a permanent backdoor to grant MINTER_ROLE after the lock — an admin-path backdoor did exist and was exploitable (1,000,000 SLT in the PoC). Fixed in `b088846`: the sentinel is made its own role-admin in the constructor, so it can never be held; `lockMinterRole(expectedMinter)` additionally refuses to seal unless the minter set is exactly `{expectedMinter}` (L-04). After the lock, no address can grant/revoke MINTER_ROLE. BURNER_ROLE grants remain possible but are useless against holders once `lockBurnSource()` has run (M-01). |
+| **Test coverage** | `test_Constructor_RevertOnZeroAdmin`, `test_PoC_LockSentinelCannotBePreGranted`, `test_PoC_SentinelUnheldBeforeAndAfterLock`, `test_L04_*`, `testFuzz_M01_HolderBalanceUntouchableAfterLock`, invariants `invariant_SingleMinterForever`, `invariant_HolderBalancesUntouchableAfterBurnLock`, role authorization tests on every admin function (`test_Set*_RevertWhenUnauthorized`). |
 
 ### 3.9 Integer Overflow / Precision Loss
 
@@ -153,7 +153,7 @@ The following are explicitly outside the V1 smart contract audit scope:
 
 1. **Avalanche C-Chain validator failures or chain-level reorgs** — Layer-1 risk inherited from Avalanche, not addressable at contract level.
 2. **Off-chain Treasury operations** (capital allocation between Treasury Safe, Hex Trust custody, and Treasury Manager) — governed by management agreements and Hex Trust custody contracts, not on-chain code.
-3. **Off-chain Performance Engine logic** (NAV computation, smoothing, fee calculation) — bounded by ±5% on-chain limit but not audited as part of contract scope.
+3. **Off-chain Performance Engine logic** (NAV computation, smoothing, fee calculation) and the engine→`updateIndex` signing path (key custody, rotation, NAV attestation) — bounded by the ±5%/update on-chain limit but not audited as part of contract scope. This is the largest known residual risk and is being addressed operationally (HSM, attestation).
 4. **Treasury Safe signer key management** — operational security responsibility of each individual signer.
 5. **Front-end / wallet application security** — separate scope (Phase 2 frontend audit).
 6. **DEX liquidity manipulation** (Trader Joe SLT/USDC pair) — secondary market behavior; not enforced by SLT contracts.
@@ -166,12 +166,24 @@ The following are explicitly outside the V1 smart contract audit scope:
 
 | Area | Note |
 |---|---|
-| `IndexOracle.updateIndex()` | `block.timestamp` comparisons are `slither-disable-next-line timestamp` annotated. Validator skew (~12s) << throttle (1h). |
+| `IndexOracle.updateIndex()` | `block.timestamp` comparisons are `slither-disable-next-line timestamp` annotated. Validator skew (~12s) << throttle (20h). |
 | `IndexOracle.stableToSLT/sltToStable` | Refactored to use `SLT_TO_STABLE_SCALE` compile-time constant to avoid divide-before-multiply pattern. Slither now reports zero findings on these functions. |
-| `IndexOracle.updateIndex` int256 cast | `int256(deltaBps)` is provably safe — `deltaBps ≤ maxChangeBps ≤ 2000` (hard ceiling), well below `int256.max`. Annotated with `forge-lint: disable-next-line(unsafe-typecast)`. |
+| `IndexOracle.updateIndex` int256 cast | `int256(deltaBps)` is provably safe — `deltaBps ≤ maxChangeBps ≤ 500` (hard ceiling), well below `int256.max`. Annotated with `forge-lint: disable-next-line(unsafe-typecast)`. |
 | `SLT.adminBurn` | Intentionally NOT gated by `Pausable` so reconciliation remains possible during emergencies. Documented in NatSpec. |
 | `MintContract.mintSLT` | Atomic forward pattern: `safeTransferFrom(msg.sender, treasurySafe, amount)` — MintContract never holds stable balance at rest. Invariant-tested under stateful fuzz. |
-| `setMaxChangeBps` time-lock | The whitepaper (`oracles.md`) describes admin parameter changes as "subject to time-locked governance." V1 implementation relies on the 3-of-5 Treasury Safe quorum for governance and does not include an on-chain `TimelockController`. **Recommendation for auditor consideration**: either add a 24-48h `TimelockController` on the admin role, or amend the whitepaper to remove the "time-locked" wording. Either path is acceptable from a security standpoint; the choice is operational/communications. |
+| `MintContract.setTreasurySafe` (M-03) | In-contract 24h timelock: `setTreasurySafe` proposes, `executeTreasurySafe` applies after `TREASURY_SAFE_DELAY`, `cancelTreasurySafe` aborts. No external `TimelockController` (keeps role topology minimal). Oracle parameter setters are **not** timelocked — they are bounded by hard floors/ceilings and governed by the 3-of-5 quorum; the whitepaper wording "time-locked governance" applies to the Treasury Safe change only. |
+| `SLT.lockMinterRole(address)` — see §5.1 Deliberate signature changes | v1.1-prereview had `lockMinterRole()`. v1.1-audit takes `expectedMinter` (L-04) so a mis-wired deployment cannot be sealed. No deployed mainnet contract is affected; Fuji is redeployed. All other v1.0/v1.1 public signatures are unchanged (`setTreasurySafe(address)` kept, semantics now propose-only). |
+| **M-04 — no absolute index floor/ceiling (known, accepted)** | The ±5% per-update bound limits *speed*, not *direction*: at the 20h floor, 36 consecutive max-steps (~30 days) reach ≈0.16× or ≈5.8× of the starting index without any single update being rejected. We deliberately do **not** add an absolute band: (a) the index tracks a real strategy whose NAV may legitimately trend; a hard band would require governance to move it and becomes a de-facto peg/price commitment, which counsel's structure excludes; (b) a slow walk is observable on-chain for weeks and the GUARDIAN pause is the designed response; (c) off-chain attestation of the published index against treasury NAV is the control for this class of risk and is outside contract scope. Auditors are asked to assess, not to remove, this decision. |
+
+### 5.1 Deliberate signature changes (v1.1-prereview → v1.1-audit)
+
+| Function | Before | After | Reason |
+|---|---|---|---|
+| `SLT.lockMinterRole` | `lockMinterRole()` | `lockMinterRole(address expectedMinter)` | L-04: refuse to seal a minter set that is not exactly `{expectedMinter}`. Selector changes; no mainnet deployment exists, Fuji is redeployed. |
+
+All other v1.0/v1.1 public signatures are unchanged. `setTreasurySafe(address)` keeps its signature; semantics are now propose-only (M-03).
+
+**Additions in v1.1-audit** (full list in `docs/ABI_BASELINE_v1.1.txt`): `SLT.lockBurnSource()`, `SLT.burnSourceLocked()`, `SLT.minterCount()`, `MintContract.executeTreasurySafe()`, `MintContract.cancelTreasurySafe()`, `MintContract.pendingTreasurySafe()`, `MintContract.pendingTreasurySafeExecutableAt()`, `MintContract.TREASURY_SAFE_DELAY()`, `IndexOracle.STALENESS_SLACK()`.
 
 ---
 
@@ -179,21 +191,21 @@ The following are explicitly outside the V1 smart contract audit scope:
 
 | Category | Tool / Suite | Status |
 |---|---|---|
-| Unit tests | Foundry | 88 tests, 100% line/branch/func coverage on `src/` |
-| Stateful fuzz | Foundry invariant suite | 9 invariants × 65,536 calls each (CI profile) — zero reverts |
-| Static analysis | Slither | 0 findings (after refactor) |
+| Unit + fuzz tests | Foundry | 152 tests (incl. 2 PoC regression files + `HardeningV11.t.sol`), 100% line/statement/branch/function coverage on `src/` |
+| Stateful fuzz | Foundry invariant suite | 11 invariants × 8,192 calls (default profile; 65,536 in CI profile) — zero reverts; includes INV-8 (holder balances untouchable after burn lock) and INV-9 (single minter forever) |
+| Static analysis | Slither 0.11.6 | 0 findings (21 contracts, 102 detectors; `--filter-paths "lib|test|script" --exclude-dependencies`) |
 | Static analysis | Mythril | Deferred to Halborn pipeline (sandbox dependency issues) |
 | Build lint | forge fmt + forge-lint | Clean, by-design exceptions annotated |
 
 ---
 
-## 7. Recommendation Summary for Halborn Engagement
+## 7. Recommendation Summary for the External Audit (tag `v1.1-audit`)
 
-1. **Primary scope**: 3 Solidity files in `src/` (~600 LoC). Treasury Safe is standard Gnosis Safe v1.4 — out of custom-code scope.
-2. **Secondary scope (light)**: review the `setMaxChangeBps` time-lock decision (Section 5).
+1. **Primary scope**: 3 Solidity files in `src/` + 2 interfaces, plus `script/Deploy.s.sol` and the post-deploy lock sequence. Treasury Safe is standard Gnosis Safe v1.4 — out of custom-code scope.
+2. **Design decisions to assess, not remove**: non-redeemable / immutable / permissionless-transfer structure; M-04 (Section 5); in-contract treasury timelock vs. `TimelockController`.
 3. **Optional**: Mythril / Manticore symbolic execution as part of standard pipeline.
-4. **Test base**: 97 tests provided, all passing. Coverage report and invariant logs in `docs/AUDIT_HANDOFF.md` (separate document).
-5. **Engagement sequence**: 2-week private audit → fix loop → Code4rena public contest → Halborn fix re-review → mainnet deploy.
+4. **Test base**: 152 tests, all passing; coverage and invariant logs in `SECURITY_CHECK_15Oct2026.md`.
+5. **Engagement sequence**: external audit → fix loop → fix re-review on the fix commit → mainnet deploy.
 
 ---
 

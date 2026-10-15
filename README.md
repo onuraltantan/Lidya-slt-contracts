@@ -1,17 +1,18 @@
 # lidya-slt-contracts
 
-Smart contracts for **SLT (Synthetic Liquid Token)** V1 — Lidya Investments quant-arbitrage performance tokenization on Avalanche C-Chain.
+Smart contracts for **SLT (Synthetic Liquidity Token)** V1 — Lidya Investments quant-arbitrage performance tokenization on Avalanche C-Chain.
 
-> **Status**: V1 starter kit, pre-audit. Not yet deployed to mainnet. Audit by Halborn (private)
-> + Code4rena (public) is the gating step before mainnet deploy.
+> **Status**: v1.1-audit — contract set frozen for external audit (tag `v1.1-audit`). Not yet
+> deployed to mainnet; Fuji testnet live. External audit (RFQ: Halborn / Zealynx / Cantina) is the
+> gating step before mainnet deploy. Latest gate results: `SECURITY_CHECK_15Oct2026.md`.
 
 ## Contracts
 
 | Contract           | Lines | Purpose                                                                   |
 | ------------------ | ----- | ------------------------------------------------------------------------- |
-| `IndexOracle.sol`  | ~140  | Stores the synthetic performance index. Bounds-checked, throttled, pausable. |
-| `SLT.sol`          | ~110  | ERC-20 + ERC-4626-style read-only metadata. Non-redeemable.               |
-| `MintContract.sol` | ~140  | Accepts USDC/USDT, mints SLT at current index, forwards stable to Treasury Safe. |
+| `IndexOracle.sol`  | 282   | Stores the synthetic performance index. Bounds-checked (±5%/update), throttled (≥20h), pausable; M-02 staleness guard. |
+| `SLT.sol`          | 328   | ERC-20 + index-based read-only metadata. Non-redeemable. Sealed minter set (`lockMinterRole`) and burn source (`lockBurnSource`). |
+| `MintContract.sol` | 320   | Accepts 6-dec USDC/USDT, mints SLT at current index, forwards stable atomically to Treasury Safe; 24h treasury-change timelock. |
 | Treasury Safe      | n/a   | Gnosis Safe (deployed off-chain via `safe.global`). 3-of-5 multisig.       |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full component diagram, roles matrix, and threat model.
@@ -65,7 +66,7 @@ Target: ≥95% line coverage before audit submission.
 ### Static analysis
 
 ```sh
-slither . --filter-paths "lib/|test/" --exclude-informational
+slither . --filter-paths "lib|test|script" --exclude-dependencies
 ```
 
 ## Deployment (Fuji testnet)
@@ -103,24 +104,31 @@ test/
   SLT.t.sol
   MintContract.t.sol
   IndexOracle.t.sol
+  HardeningV11.t.sol        # M-01 / M-02 / M-03 / L-04 (v1.1-audit)
+  PreAuditPoC.t.sol         # Moment Research PoCs, now regression tests
+  PreAuditPoC2.t.sol
+  invariants/               # stateful fuzz: Handler.sol + SLTInvariants.t.sol
 script/
-  Deploy.s.sol
+  Deploy.s.sol              # mainnet (Safe-driven post-steps printed)
+  DeployFuji.s.sol          # Fuji end-to-end incl. lock sequence
 docs/
   ARCHITECTURE.md
-.github/workflows/ci.yml
+  THREAT_MODEL.md
+  FUJI_DEPLOYMENT_RUNBOOK.md
+.claude/                    # repo harness: slt-invariant-auditor agent, /doc-sync, /audit-gate
 foundry.toml
+foundry.lock                # dependency pins (OZ v5.6.1, forge-std v1.16.2)
 remappings.txt
 .env.example
 ```
 
 ## Audit Pipeline
 
-1. **Internal review** — peer review by Blockxell engineering + 1 external Solidity reviewer.
-2. **Halborn private audit** — ~2 weeks. Threat model + spec doc + repo handed off.
-3. **Halborn fix loop** — findings → PRs → re-audit.
-4. **Code4rena public contest** — 7 days, award pool $20-30K USDC.
-5. **Final fix review** — Halborn re-validates Code4rena fixes.
-6. **Mainnet deploy**.
+1. **Internal review** — done (Jul–Aug 2026, `REVIEW_BRIEF.md`).
+2. **Independent pre-review** — Moment Research, Sep 2026 (H-01 fixed; M-01/M-02/M-03/L-04 fixed in v1.1-audit; M-04 accepted, see THREAT_MODEL §5).
+3. **External audit** — RFQ to Halborn / Zealynx / Cantina on tag `v1.1-audit`; one fix-verification round included.
+4. **Fix loop** — findings → PRs → re-audit of the fix commit.
+5. **Mainnet deploy** — Safe-batched, role topology verified on-chain before `lockMinterRole` / `lockBurnSource`.
 
 ## License
 
@@ -131,4 +139,4 @@ the change date.
 ## Contact
 
 - Engineering: `altan@blockxell.com`
-- Security disclosures: see [`SECURITY.md`](SECURITY.md) (TBD, before mainnet)
+- Security disclosures: `altan@blockxell.com` (a `SECURITY.md` / bug-bounty policy will be published before mainnet)

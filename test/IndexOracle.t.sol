@@ -264,8 +264,10 @@ contract IndexOracleTest is Test {
     }
 
     function test_SetMinUpdateInterval_HappyPath() public {
-        vm.prank(admin);
+        vm.startPrank(admin);
+        oracle.setGracePeriod(2 days); // M-02: grace must be >= interval + 4h
         oracle.setMinUpdateInterval(22 hours); // within [20 hours, 1 day]
+        vm.stopPrank();
         assertEq(oracle.minUpdateInterval(), 22 hours);
     }
 
@@ -297,7 +299,9 @@ contract IndexOracleTest is Test {
     // Fuzz
     // ----------------------------------------------------------------------
 
-    function testFuzz_UpdateIndex_WithinBounds(uint256 deltaBps) public {
+    function testFuzz_UpdateIndex_WithinBounds(
+        uint256 deltaBps
+    ) public {
         deltaBps = bound(deltaBps, 1, 500);
         skip(20 hours + 1);
         uint256 newIndex = (INITIAL_INDEX * (10_000 + deltaBps)) / 10_000;

@@ -105,7 +105,9 @@ contract SLTTest is Test {
     // ----------------------------------------------------------------------
 
     /// @dev Helper: authorize `source` for adminBurn as the admin.
-    function _authorizeBurnSource(address source) internal {
+    function _authorizeBurnSource(
+        address source
+    ) internal {
         vm.prank(admin);
         slt.setBurnSource(source, true);
     }
@@ -185,7 +187,7 @@ contract SLTTest is Test {
 
     function test_LockMinterRole_BlocksFutureGrants() public {
         vm.prank(admin);
-        slt.lockMinterRole();
+        slt.lockMinterRole(minter);
         assertTrue(slt.minterRoleLocked());
 
         bytes32 minterRole = slt.MINTER_ROLE();
@@ -196,7 +198,7 @@ contract SLTTest is Test {
 
     function test_LockMinterRole_BlocksRevokes() public {
         vm.prank(admin);
-        slt.lockMinterRole();
+        slt.lockMinterRole(minter);
 
         bytes32 minterRole = slt.MINTER_ROLE();
         vm.prank(admin);
@@ -207,21 +209,21 @@ contract SLTTest is Test {
 
     function test_LockMinterRole_OnlyOnce() public {
         vm.prank(admin);
-        slt.lockMinterRole();
+        slt.lockMinterRole(minter);
         vm.prank(admin);
         vm.expectRevert(SLT.SLT_MinterRoleAlreadyLocked.selector);
-        slt.lockMinterRole();
+        slt.lockMinterRole(minter);
     }
 
     function test_LockMinterRole_OnlyAdmin() public {
         vm.prank(alice);
         vm.expectRevert();
-        slt.lockMinterRole();
+        slt.lockMinterRole(minter);
     }
 
     function test_LockMinterRole_MintingStillWorksAfterLock() public {
         vm.prank(admin);
-        slt.lockMinterRole();
+        slt.lockMinterRole(minter);
         vm.prank(minter);
         slt.mint(alice, 1_000 ether);
         assertEq(slt.balanceOf(alice), 1_000 ether);

@@ -10,9 +10,25 @@ import {MintContract} from "../src/MintContract.sol";
 /// @dev A configurable-decimals mock "stablecoin".
 contract MockToken is ERC20 {
     uint8 private immutable _dec;
-    constructor(string memory n, string memory s, uint8 d) ERC20(n, s) {_dec = d;}
-    function decimals() public view override returns (uint8) {return _dec;}
-    function mint(address to, uint256 amt) external {_mint(to, amt);}
+
+    constructor(
+        string memory n,
+        string memory s,
+        uint8 d
+    ) ERC20(n, s) {
+        _dec = d;
+    }
+
+    function decimals() public view override returns (uint8) {
+        return _dec;
+    }
+
+    function mint(
+        address to,
+        uint256 amt
+    ) external {
+        _mint(to, amt);
+    }
 }
 
 /// @dev A malicious 6-decimal token that tries to re-enter mintSLT from inside transferFrom.
@@ -21,10 +37,30 @@ contract ReentrantToken is ERC20 {
     bool public armed;
     bool private entered;
     constructor() ERC20("Evil", "EVL") {}
-    function decimals() public pure override returns (uint8) {return 6;}
-    function mint(address to, uint256 amt) external {_mint(to, amt);}
-    function arm(MintContract m) external {mintC = m; armed = true;}
-    function transferFrom(address from, address to, uint256 amt) public override returns (bool) {
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function mint(
+        address to,
+        uint256 amt
+    ) external {
+        _mint(to, amt);
+    }
+
+    function arm(
+        MintContract m
+    ) external {
+        mintC = m;
+        armed = true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amt
+    ) public override returns (bool) {
         if (armed && !entered) {
             entered = true;
             mintC.mintSLT(address(this), amt); // second entry — must be blocked
@@ -38,23 +74,23 @@ contract PreAuditPoC2 is Test {
     SLT slt;
     IndexOracle oracle;
     MintContract mintC;
-    MockToken usdc;     // correct 6-decimal control
+    MockToken usdc; // correct 6-decimal control
 
-    address safe    = makeAddr("treasurySafe");
+    address safe = makeAddr("treasurySafe");
     address updater = makeAddr("updater");
-    address alice   = makeAddr("alice");
-    address attacker= makeAddr("attacker");
+    address alice = makeAddr("alice");
+    address attacker = makeAddr("attacker");
 
     bytes32 CONFIG;
 
-    uint256 constant MIN_MINT = 1_000e6;      // $1,000 in 6-dec
-    uint256 constant MAX_MINT = 5_000_000e6;  // $5,000,000 in 6-dec
+    uint256 constant MIN_MINT = 1_000e6; // $1,000 in 6-dec
+    uint256 constant MAX_MINT = 5_000_000e6; // $5,000,000 in 6-dec
 
     function setUp() public {
         oracle = new IndexOracle(1e18, safe, safe, updater);
-        slt    = new SLT(safe, safe, address(oracle));
-        mintC  = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT);
-        usdc   = new MockToken("USD Coin", "USDC", 6);
+        slt = new SLT(safe, safe, address(oracle));
+        mintC = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT);
+        usdc = new MockToken("USD Coin", "USDC", 6);
         CONFIG = mintC.CONFIG_ROLE();
 
         vm.startPrank(safe);

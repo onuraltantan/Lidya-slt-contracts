@@ -10,14 +10,19 @@ import {MintContract} from "../src/MintContract.sol";
 /// @notice Mock 6-decimal USDC/USDT for Fuji testnet. Public mint for faucet-style use.
 /// @dev    Anyone can mint these tokens — they exist only on Fuji and have zero economic value.
 contract MockStableFuji is ERC20 {
-    constructor(string memory name, string memory sym) ERC20(name, sym) {}
+    constructor(
+        string memory name,
+        string memory sym
+    ) ERC20(name, sym) {}
 
     function decimals() public pure override returns (uint8) {
         return 6;
     }
 
     /// @notice Public mint for testing. Anyone can request tokens to test the SLT mint flow.
-    function faucet(uint256 amount) external {
+    function faucet(
+        uint256 amount
+    ) external {
         _mint(msg.sender, amount);
     }
 }
@@ -78,6 +83,10 @@ contract DeployFuji is Script {
         mintContract.setStablecoinAccepted(address(usdc), true);
         mintContract.setStablecoinAccepted(address(usdt), true);
 
+        // v1.1-audit lock sequence (one-way, mirrors mainnet runbook steps 5-6).
+        slt.lockMinterRole(address(mintContract)); // H-01 / L-04
+        slt.lockBurnSource(); // M-01
+
         // 6. Mint some test stable to the deployer for an initial mint smoke test.
         usdc.faucet(10_000 * 1e6); // $10,000 tUSDC
         usdt.faucet(10_000 * 1e6); // $10,000 tUSDT
@@ -90,6 +99,7 @@ contract DeployFuji is Script {
         console2.log("Roles wired:");
         console2.log("  - SLT.MINTER_ROLE granted to MintContract");
         console2.log("  - MintContract whitelisted tUSDC + tUSDT");
+        console2.log("  - SLT.lockMinterRole(MintContract) + SLT.lockBurnSource() executed (one-way)");
         console2.log("  - Deployer holds: ORACLE_UPDATER, GUARDIAN, ADMIN, PAUSER, BURNER, CONFIG");
         console2.log("");
         console2.log("Add these to dashboard .env.local:");

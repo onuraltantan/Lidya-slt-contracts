@@ -51,9 +51,8 @@ contract Deploy is Script {
         // 3. Deploy MintContract.
         //    Admin = treasurySafe.
         //    Pauser = treasurySafe.
-        MintContract mintContract = new MintContract(
-            address(slt), address(oracle), treasurySafe, treasurySafe, treasurySafe, minMint, maxMint
-        );
+        MintContract mintContract =
+            new MintContract(address(slt), address(oracle), treasurySafe, treasurySafe, treasurySafe, minMint, maxMint);
         console2.log("MintContract:", address(mintContract));
 
         // 4. Deployer-managed bootstrap config (must be transferred away post-deploy).
@@ -84,5 +83,8 @@ contract Deploy is Script {
         console2.log("  2. MintContract.setStablecoinAccepted(USDC, true)");
         console2.log("  3. MintContract.setStablecoinAccepted(USDT, true)");
         console2.log("  4. IndexOracle: rotate ORACLE_UPDATER_ROLE from deployer to Chainlink adapter");
+        console2.log("  5. SLT.lockMinterRole(MintContract)  -- seals minter set (H-01 / L-04), one-way");
+        console2.log("  6. SLT.lockBurnSource()              -- seals burn source = Treasury Safe (M-01), one-way");
+        console2.log("  Treasury Safe changes: setTreasurySafe(new) -> wait 24h -> executeTreasurySafe() (M-03)");
     }
 }

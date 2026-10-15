@@ -50,7 +50,7 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     // -----------------------------------------------------------------------
 
     /// @notice The Treasury Safe address that receives all stablecoin deposits.
-    /// @dev    Updatable by DEFAULT_ADMIN_ROLE via setTreasurySafe().
+    /// @dev    Changed only via setTreasurySafe() (propose) -> 24h -> executeTreasurySafe() (M-03).
     address public treasurySafe;
 
     /// @notice Whitelist of accepted stablecoin token addresses.
@@ -70,6 +70,18 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     ///      enforces this at whitelist time (finding: decimals assumption).
     uint8 public constant EXPECTED_STABLE_DECIMALS = 6;
 
+    /// @notice Delay between proposing and executing a Treasury Safe change (finding M-03).
+    /// @dev    In-contract timelock: no external TimelockController, no extra role topology. Gives
+    ///         signers and watchers 24h to notice and cancel a hostile or mistaken redirect of
+    ///         all future deposits.
+    uint256 public constant TREASURY_SAFE_DELAY = 24 hours;
+
+    /// @notice Treasury Safe address proposed via setTreasurySafe(); zero when nothing is pending.
+    address public pendingTreasurySafe;
+
+    /// @notice Earliest timestamp at which executeTreasurySafe() may apply the pending change.
+    uint256 public pendingTreasurySafeExecutableAt;
+
     // -----------------------------------------------------------------------
     // Events
     // -----------------------------------------------------------------------
@@ -81,18 +93,20 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     /// @param sltAmount   Amount of SLT minted (18-decimal units).
     /// @param indexUsed   The pricePerShare value used to compute the SLT amount.
     event Minted(
-        address indexed user,
-        address indexed stablecoin,
-        uint256 stableAmount,
-        uint256 sltAmount,
-        uint256 indexUsed
+        address indexed user, address indexed stablecoin, uint256 stableAmount, uint256 sltAmount, uint256 indexUsed
     );
 
     /// @notice Emitted when a stablecoin is added to or removed from the whitelist.
     event StablecoinWhitelistUpdated(address indexed token, bool accepted);
 
-    /// @notice Emitted when the Treasury Safe address is updated (constructor or setTreasurySafe).
+    /// @notice Emitted when the Treasury Safe address actually changes (constructor or executeTreasurySafe).
     event TreasurySafeUpdated(address indexed previous, address indexed updated);
+
+    /// @notice Emitted when a Treasury Safe change is proposed (M-03 timelock start).
+    event TreasurySafeProposed(address indexed current, address indexed proposed, uint256 executableAt);
+
+    /// @notice Emitted when a pending Treasury Safe proposal is cancelled.
+    event TreasurySafeProposalCancelled(address indexed cancelled);
 
     /// @notice Emitted when mint limits are changed (constructor or setMintLimits).
     event MintLimitsUpdated(uint256 minAmount, uint256 maxAmount);
@@ -123,6 +137,12 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     /// @notice Reverts when whitelisting a stablecoin whose decimals != EXPECTED_STABLE_DECIMALS.
     /// @param token The rejected token. @param actual The decimals it reported (0 if the call failed).
     error MintContract_UnexpectedDecimals(address token, uint8 actual);
+
+    /// @notice Reverts when executeTreasurySafe()/cancelTreasurySafe() is called with no pending proposal.
+    error MintContract_NoPendingTreasurySafe();
+
+    /// @notice Reverts when executeTreasurySafe() is called before TREASURY_SAFE_DELAY has elapsed.
+    error MintContract_TreasurySafeDelayNotElapsed();
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -186,12 +206,10 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     ///         SafeERC20/SLT.mint error. Protected by nonReentrant. Subject to Pausable.
     ///         The stablecoin is pulled from msg.sender directly to the Treasury Safe in a single
     ///         safeTransferFrom call (no intermediate balance held by this contract).
-    function mintSLT(address stablecoin, uint256 stableAmount)
-        external
-        nonReentrant
-        whenNotPaused
-        returns (uint256 sltMinted)
-    {
+    function mintSLT(
+        address stablecoin,
+        uint256 stableAmount
+    ) external nonReentrant whenNotPaused returns (uint256 sltMinted) {
         if (!acceptedStablecoin[stablecoin]) revert MintContract_StablecoinNotAccepted(stablecoin);
         if (stableAmount < minMintAmount || stableAmount > maxMintAmount) {
             revert MintContract_AmountOutOfBounds(stableAmount, minMintAmount, maxMintAmount);
@@ -219,7 +237,10 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     /// @param accepted True to whitelist, false to delist.
     /// @dev    Restricted to CONFIG_ROLE. Reverts with MintContract_ZeroAddress if token is zero.
     ///         Emits StablecoinWhitelistUpdated.
-    function setStablecoinAccepted(address token, bool accepted) external onlyRole(CONFIG_ROLE) {
+    function setStablecoinAccepted(
+        address token,
+        bool accepted
+    ) external onlyRole(CONFIG_ROLE) {
         if (token == address(0)) revert MintContract_ZeroAddress();
         // When whitelisting, enforce the 6-decimal assumption the conversion math depends on.
         // (Delisting is never blocked, so a mistakenly-listed token can always be removed.)
@@ -234,14 +255,44 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
         emit StablecoinWhitelistUpdated(token, accepted);
     }
 
-    /// @notice Update the Treasury Safe address that receives stablecoin deposits.
-    /// @param newSafe The new Treasury Safe address.
-    /// @dev    Restricted to DEFAULT_ADMIN_ROLE. Reverts with MintContract_ZeroAddress if zero.
-    ///         Emits TreasurySafeUpdated.
-    function setTreasurySafe(address newSafe) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    /// @notice Propose a new Treasury Safe. Takes effect only after executeTreasurySafe() is called
+    ///         once TREASURY_SAFE_DELAY (24h) has elapsed (finding M-03).
+    /// @param newSafe Proposed Treasury Safe address.
+    /// @dev    Restricted to DEFAULT_ADMIN_ROLE. Re-proposing overwrites the pending proposal and
+    ///         restarts the 24h clock. Deposits keep flowing to the current safe until execution.
+    ///         Signature kept from v1.0 for interface stability; semantics are now propose-only.
+    function setTreasurySafe(
+        address newSafe
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newSafe == address(0)) revert MintContract_ZeroAddress();
-        emit TreasurySafeUpdated(treasurySafe, newSafe);
+        uint256 executableAt = block.timestamp + TREASURY_SAFE_DELAY;
+        pendingTreasurySafe = newSafe;
+        pendingTreasurySafeExecutableAt = executableAt;
+        emit TreasurySafeProposed(treasurySafe, newSafe, executableAt);
+    }
+
+    /// @notice Apply the pending Treasury Safe proposal once the delay has elapsed.
+    /// @dev    Restricted to DEFAULT_ADMIN_ROLE. Clears the pending state on success.
+    function executeTreasurySafe() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        address newSafe = pendingTreasurySafe;
+        if (newSafe == address(0)) revert MintContract_NoPendingTreasurySafe();
+        // slither-disable-next-line timestamp
+        if (block.timestamp < pendingTreasurySafeExecutableAt) revert MintContract_TreasurySafeDelayNotElapsed();
+        address previous = treasurySafe;
         treasurySafe = newSafe;
+        pendingTreasurySafe = address(0);
+        pendingTreasurySafeExecutableAt = 0;
+        emit TreasurySafeUpdated(previous, newSafe);
+    }
+
+    /// @notice Cancel the pending Treasury Safe proposal.
+    /// @dev    Restricted to DEFAULT_ADMIN_ROLE. Reverts if nothing is pending.
+    function cancelTreasurySafe() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        address cancelled = pendingTreasurySafe;
+        if (cancelled == address(0)) revert MintContract_NoPendingTreasurySafe();
+        pendingTreasurySafe = address(0);
+        pendingTreasurySafeExecutableAt = 0;
+        emit TreasurySafeProposalCancelled(cancelled);
     }
 
     /// @notice Update the per-transaction mint amount limits.
@@ -249,7 +300,10 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     /// @param newMax New maximum mint amount (6-decimal stable units).
     /// @dev    Restricted to CONFIG_ROLE. Reverts with MintContract_InvalidLimits if newMin == 0
     ///         or newMin > newMax. Emits MintLimitsUpdated.
-    function setMintLimits(uint256 newMin, uint256 newMax) external onlyRole(CONFIG_ROLE) {
+    function setMintLimits(
+        uint256 newMin,
+        uint256 newMax
+    ) external onlyRole(CONFIG_ROLE) {
         if (newMin == 0 || newMin > newMax) revert MintContract_InvalidLimits();
         minMintAmount = newMin;
         maxMintAmount = newMax;

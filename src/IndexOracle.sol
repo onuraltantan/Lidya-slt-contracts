@@ -49,6 +49,11 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         downstream conversion math reads as a single multiply (no division-before-multiply).
     uint256 public constant SLT_TO_STABLE_SCALE = 1e12;
 
+    /// @notice Minimum slack between minUpdateInterval and gracePeriod (finding M-02).
+    /// @dev    Invariant enforced by the setters: gracePeriod >= minUpdateInterval + STALENESS_SLACK.
+    ///         Defaults (20h / 1 day) satisfy it exactly at the boundary.
+    uint256 public constant STALENESS_SLACK = 4 hours;
+
     // -----------------------------------------------------------------------
     // Mutable state
     // -----------------------------------------------------------------------
@@ -122,7 +127,12 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     /// @param updater      Address granted ORACLE_UPDATER_ROLE (Chainlink adapter).
     /// @dev    Sets default safety parameters: maxChangeBps=500 (5%), gracePeriod=1 day,
     ///         minUpdateInterval=20 hours. Emits an initial IndexUpdated event.
-    constructor(uint256 initialIndex, address admin, address guardian, address updater) {
+    constructor(
+        uint256 initialIndex,
+        address admin,
+        address guardian,
+        address updater
+    ) {
         if (initialIndex == 0) revert IndexOracle_ZeroIndex();
         if (admin == address(0) || guardian == address(0) || updater == address(0)) {
             revert IndexOracle_InvalidConfig();
@@ -130,8 +140,8 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
 
         pricePerShare = initialIndex;
         lastUpdateTimestamp = block.timestamp;
-        maxChangeBps = 500;           // 5.00% per update (default = hard ceiling)
-        gracePeriod = 1 days;         // staleness threshold
+        maxChangeBps = 500; // 5.00% per update (default = hard ceiling)
+        gracePeriod = 1 days; // staleness threshold
         minUpdateInterval = 20 hours; // throttle floor (default = hard floor; daily cadence)
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -152,7 +162,9 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         less than minUpdateInterval has elapsed, IndexOracle_OutOfBounds if the absolute
     ///         change exceeds maxChangeBps, or AccessControl/Pausable errors for unauthorized
     ///         or paused calls. Emits IndexUpdated on success.
-    function updateIndex(uint256 newIndex) external whenNotPaused onlyRole(ORACLE_UPDATER_ROLE) {
+    function updateIndex(
+        uint256 newIndex
+    ) external whenNotPaused onlyRole(ORACLE_UPDATER_ROLE) {
         if (newIndex == 0) revert IndexOracle_ZeroIndex();
 
         uint256 previous = pricePerShare;
@@ -199,7 +211,9 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     /// @param stableAmount Stablecoin amount in 6-decimal units (USDC/USDT).
     /// @return SLT amount in 18-decimal units.
     /// @dev    Math: stableAmount (6 dec) * 1e12 (scale-up) * 1e18 / pricePerShare (1e18 scale) → 18 dec SLT.
-    function stableToSLT(uint256 stableAmount) external view override returns (uint256) {
+    function stableToSLT(
+        uint256 stableAmount
+    ) external view override returns (uint256) {
         return (stableAmount * SLT_TO_STABLE_SCALE * INDEX_PRECISION) / pricePerShare;
     }
 
@@ -207,7 +221,9 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     /// @param sltAmount SLT amount in 18-decimal units.
     /// @return Stablecoin amount in 6-decimal units.
     /// @dev    Math: sltAmount (18 dec) * pricePerShare / 1e18 / 1e12 (scale-down) → 6 dec stable.
-    function sltToStable(uint256 sltAmount) external view override returns (uint256) {
+    function sltToStable(
+        uint256 sltAmount
+    ) external view override returns (uint256) {
         return (sltAmount * pricePerShare) / (INDEX_PRECISION * SLT_TO_STABLE_SCALE);
     }
 
@@ -219,7 +235,9 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     /// @param reason Free-form string emitted in the OraclePaused event for audit traceability.
     /// @dev    While paused, updateIndex() reverts and isFresh() returns false. Existing SLT
     ///         remains transferable and the last-known index continues to be readable.
-    function pause(string calldata reason) external onlyRole(GUARDIAN_ROLE) {
+    function pause(
+        string calldata reason
+    ) external onlyRole(GUARDIAN_ROLE) {
         _pause();
         emit OraclePaused(msg.sender, reason);
     }
@@ -239,7 +257,9 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input. The ceiling equals
     ///         the whitepaper's ±5% claim — admin can tighten the bound but never loosen it
     ///         beyond the documented limit.
-    function setMaxChangeBps(uint256 newMaxBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMaxChangeBps(
+        uint256 newMaxBps
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newMaxBps == 0 || newMaxBps > 500) revert IndexOracle_InvalidConfig(); // hard ceiling 5%
         emit MaxChangeBpsUpdated(maxChangeBps, newMaxBps);
         maxChangeBps = newMaxBps;
@@ -251,8 +271,13 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         1 day in v1.1: gracePeriod must always exceed the 20-hour minimum update
     ///         interval, otherwise the oracle would read stale between routine updates and
     ///         needlessly block minting.
-    function setGracePeriod(uint256 newGracePeriod) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setGracePeriod(
+        uint256 newGracePeriod
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newGracePeriod < 1 days || newGracePeriod > 7 days) revert IndexOracle_InvalidConfig();
+        // M-02: grace must leave >= STALENESS_SLACK of operational room over the update throttle;
+        // otherwise a one-second slip after the earliest legal update makes the oracle stale and halts mint.
+        if (newGracePeriod < minUpdateInterval + STALENESS_SLACK) revert IndexOracle_InvalidConfig();
         emit GracePeriodUpdated(gracePeriod, newGracePeriod);
         gracePeriod = newGracePeriod;
     }
@@ -264,8 +289,12 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         code-level guarantee: even a compromised admin cannot re-enable rapid-fire
     ///         updates to walk the index. Upper limit stays below gracePeriod's 1-day default
     ///         so a normally-operating updater never trips staleness.
-    function setMinUpdateInterval(uint256 newInterval) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMinUpdateInterval(
+        uint256 newInterval
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newInterval < 20 hours || newInterval > 1 days) revert IndexOracle_InvalidConfig();
+        // M-02: see setGracePeriod. Raise gracePeriod first if a longer interval is wanted.
+        if (gracePeriod < newInterval + STALENESS_SLACK) revert IndexOracle_InvalidConfig();
         emit MinUpdateIntervalUpdated(minUpdateInterval, newInterval);
         minUpdateInterval = newInterval;
     }

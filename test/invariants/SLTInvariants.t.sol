@@ -36,14 +36,16 @@ contract SLTInvariantsTest is StdInvariant, Test {
         usdc = new MockStable("USD Coin", "USDC");
         usdt = new MockStable("Tether USD", "USDT");
 
-        mintContract =
-            new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT);
+        mintContract = new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT);
 
         // Wire up roles and whitelists.
         vm.startPrank(admin);
         slt.grantRole(slt.MINTER_ROLE(), address(mintContract));
         mintContract.setStablecoinAccepted(address(usdc), true);
         mintContract.setStablecoinAccepted(address(usdt), true);
+        // v1.1-audit production lock sequence (mirrors Deploy script):
+        slt.lockMinterRole(address(mintContract)); // L-04 / H-01
+        slt.lockBurnSource(); // M-01
         vm.stopPrank();
 
         // Deploy the handler.
@@ -52,7 +54,7 @@ contract SLTInvariantsTest is StdInvariant, Test {
         // Tell Foundry to fuzz only the handler's functions (not SLT/oracle/mint directly).
         targetContract(address(handler));
 
-        bytes4[] memory selectors = new bytes4[](7);
+        bytes4[] memory selectors = new bytes4[](10);
         selectors[0] = handler.mintWithUSDC.selector;
         selectors[1] = handler.mintWithUSDT.selector;
         selectors[2] = handler.updateOracleIndex.selector;
@@ -60,6 +62,9 @@ contract SLTInvariantsTest is StdInvariant, Test {
         selectors[4] = handler.unpauseMint.selector;
         selectors[5] = handler.pauseOracle.selector;
         selectors[6] = handler.unpauseOracle.selector;
+        selectors[7] = handler.adminBurnAttempt.selector;
+        selectors[8] = handler.widenBurnSourceAttempt.selector;
+        selectors[9] = handler.grantMinterAttempt.selector;
         targetSelector(StdInvariant.FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -128,6 +133,36 @@ contract SLTInvariantsTest is StdInvariant, Test {
     function invariant_StablecoinsRemainAccepted() public view {
         assertTrue(mintContract.acceptedStablecoin(address(usdc)), "USDC dropped from whitelist");
         assertTrue(mintContract.acceptedStablecoin(address(usdt)), "USDT dropped from whitelist");
+    }
+
+    // ----------------------------------------------------------------------
+    // INV-8 (M-01): after lockBurnSource(), NO role holder can reduce a holder's
+    //        balance. Actors never transfer in the handler, so balanceOf(actor)
+    //        must equal exactly what was minted to them, regardless of how many
+    //        adminBurn / setBurnSource / grantRole(BURNER) attempts were made.
+    // ----------------------------------------------------------------------
+
+    function invariant_HolderBalancesUntouchableAfterBurnLock() public view {
+        assertTrue(slt.burnSourceLocked(), "burn source not locked");
+        uint256 n = handler.actorCount();
+        for (uint256 i = 0; i < n; i++) {
+            address a = handler.actorAt(i);
+            assertEq(slt.balanceOf(a), handler.ghost_mintedTo(a), "holder balance touched by issuer");
+            assertFalse(slt.authorizedBurnSource(a), "holder became a burn source");
+        }
+        assertTrue(slt.authorizedBurnSource(admin), "Treasury Safe dropped from burn sources");
+    }
+
+    // ----------------------------------------------------------------------
+    // INV-9 (H-01 / L-04): after lockMinterRole(mintContract), MintContract is
+    //        the one and only minter, forever.
+    // ----------------------------------------------------------------------
+
+    function invariant_SingleMinterForever() public view {
+        assertTrue(slt.minterRoleLocked(), "minter role not locked");
+        assertEq(slt.minterCount(), 1, "minter count != 1");
+        assertTrue(slt.hasRole(slt.MINTER_ROLE(), address(mintContract)), "MintContract lost MINTER_ROLE");
+        assertEq(slt.getRoleAdmin(slt.MINTER_ROLE()), slt.MINTER_ADMIN_LOCK(), "minter admin not sealed");
     }
 
     // ----------------------------------------------------------------------

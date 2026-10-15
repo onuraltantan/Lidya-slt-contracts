@@ -17,10 +17,14 @@ interface IIndexOracle {
     function isFresh() external view returns (bool);
 
     /// @notice Convert a stablecoin amount (in 6-decimal units) to SLT amount (18-decimal units) at current index.
-    function stableToSLT(uint256 stableAmount) external view returns (uint256);
+    function stableToSLT(
+        uint256 stableAmount
+    ) external view returns (uint256);
 
     /// @notice Convert an SLT amount (18-decimal units) to stablecoin amount (6-decimal units) at current index.
-    function sltToStable(uint256 sltAmount) external view returns (uint256);
+    function sltToStable(
+        uint256 sltAmount
+    ) external view returns (uint256);
 
     event IndexUpdated(uint256 indexed newIndex, uint256 indexed previousIndex, int256 deltaBps, uint256 timestamp);
     event OraclePaused(address indexed by, string reason);

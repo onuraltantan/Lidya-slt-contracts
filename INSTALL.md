@@ -24,9 +24,8 @@ If you cloned/copied this folder fresh, set up Foundry libraries:
 
 ```sh
 cd lidya-slt-contracts
-forge install --no-commit OpenZeppelin/openzeppelin-contracts@v5.0.2
-forge install --no-commit smartcontractkit/chainlink-brownie-contracts
-forge install --no-commit foundry-rs/forge-std
+forge install --no-commit OpenZeppelin/openzeppelin-contracts@v5.6.1   # pinned in foundry.lock (rev 5fd1781)
+forge install --no-commit foundry-rs/forge-std@v1.16.2   # pinned in foundry.lock (rev bf647bd)
 ```
 
 If you want submodules tracked under `lib/`:
@@ -59,13 +58,13 @@ Expected: all tests pass; fuzz runs ≥ 1000.
 Install Slither:
 
 ```sh
-pip3 install slither-analyzer
+pipx install slither-analyzer   # or: pip3 install slither-analyzer (use --break-system-packages on PEP 668 systems)
 ```
 
 Run:
 
 ```sh
-slither . --filter-paths "lib/|test/" --exclude-informational
+slither . --filter-paths "lib|test|script" --exclude-dependencies
 ```
 
 ## 6. Open in Claude Code
