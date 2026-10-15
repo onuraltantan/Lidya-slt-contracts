@@ -156,3 +156,38 @@ Fuji'de smoke test geçince:
 | Explorer | https://testnet.snowtrace.io |
 | Faucet | https://core.app/tools/testnet-faucet/ |
 | API key portal | https://routescan.io/ |
+
+---
+
+## Fuji deployment — v1.1-audit (15 Oct 2026)
+
+`forge script script/DeployFuji.s.sol:DeployFuji --rpc-url $FUJI_RPC_URL --broadcast --slow` · deployer/test-treasury `0x471D1427e78ffF8fF7abEb17229387B5Bf459B47` · chain 43113
+
+| Contract | Address |
+|---|---|
+| IndexOracle | `0x3318F2110395ea9Ec812c75F0885C77dB1bE0b75` |
+| SLT | `0x4CE787CA936a633041e6611bff22440B26C57017` |
+| MintContract | `0xD166A3b96E7921A53cD7f40F9A381db89d132C80` |
+| tUSDC (mock, 6 dec) | `0x3712BEeFb7aeB5b9c3DE2e3B722b8cE24afF4FF8` |
+| tUSDT (mock, 6 dec) | `0xC6a25aef4eEBb140baa6632E461a1c8503edcA69` |
+
+Lock sequence executed inside the deploy script: `lockMinterRole(MintContract)` + `lockBurnSource()`. Post-deploy state read back: `minterRoleLocked=true · minterCount=1 · burnSourceLocked=true · authorizedBurnSource(treasury)=true · TREASURY_SAFE_DELAY=86400 · STALENESS_SLACK=14400`.
+
+### E2E (same day, `cast send`, all against the addresses above)
+
+| Step | Result | Tx |
+|---|---|---|
+| mint 1,000 tUSDC → 1,000 SLT at index 1.0 | ok | `0x0ddc7d0a50071029d93e671c283dfa977578f06d3f19e627ec0948cd0fab5f92` |
+| `pause()` → `transfer` reverts `EnforcedPause` → `unpause()` → transfer ok | ok | `0xa20ed06d…`, `0xb78fdb92…`, `0xfcdfc844…` |
+| `updateIndex(1.01e18)` 10 min after deploy | reverts `IndexOracle_TooSoon` (20h throttle, expected); `isFresh()=true` | — |
+| M-02: `setMinUpdateInterval(21h)` with grace=1d | reverts `IndexOracle_InvalidConfig` | — |
+| M-01: `setBurnSource(0xdead,true)` after lock | reverts `SLT_BurnSourceLocked` | — |
+| M-01: `adminBurn(0xdead,1)` (holder) | reverts `SLT_BurnSourceNotAuthorized` | — |
+| M-01: `adminBurn(treasury,1)` | ok (reconciliation path intact) | `0xc28dcddef07c93eebcca6b35db329cfd010f8727b99e8f58be05e102f30061dd` |
+| H-01/L-04: `grantRole(MINTER_ROLE,0xdead)` after lock | reverts `AccessControlUnauthorizedAccount` | — |
+| M-03: `setTreasurySafe(0xA5)` → pending set, `treasurySafe` unchanged → `executeTreasurySafe()` early reverts `TreasurySafeDelayNotElapsed` → `cancelTreasurySafe()` clears | ok | `0x7221706e…`, `0x63b9b864…` |
+| M-03 follow-up: `setTreasurySafe(treasury)` re-proposed; executable at unix `1792171116` (16 Oct 2026 17:18 UTC) | pending | `0x7f71e53ea63bb600f823867b928ca6580b8bbfec1a305a44129527a215e87252` |
+
+Pending for 16 Oct (time-gated on-chain, cannot be forced): `updateIndex` after 20h (≥ unix `1792156613`), `executeTreasurySafe()` after 24h (≥ `1792171116`).
+
+Dashboard app (`/projects/blockxell/lidya/app`) still points at the Jul-2026 Fuji deployment; switching it needs a `.env.local` address update + `next build` + pm2 restart (not done in this round).
