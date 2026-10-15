@@ -244,7 +244,7 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     // Pause / unpause
     // -----------------------------------------------------------------------
 
-    /// @notice Pause all transfers, mints, and burns triggered through `_update`.
+    /// @notice Pause holder-to-holder transfers and mint(). Burns are NOT paused.
     /// @dev    Restricted to PAUSER_ROLE. Note: adminBurn is intentionally NOT gated by paused
     ///         state so reconciliation remains possible during emergencies.
     function pause() external onlyRole(PAUSER_ROLE) {

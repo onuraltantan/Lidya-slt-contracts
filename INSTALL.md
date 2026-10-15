@@ -33,7 +33,6 @@ If you want submodules tracked under `lib/`:
 ```sh
 git init
 git submodule add https://github.com/OpenZeppelin/openzeppelin-contracts lib/openzeppelin-contracts
-git submodule add https://github.com/smartcontractkit/chainlink-brownie-contracts lib/chainlink-brownie-contracts
 git submodule add https://github.com/foundry-rs/forge-std lib/forge-std
 ```
 
@@ -84,8 +83,7 @@ Code to:
 - [ ] Slither clean (no medium/high severity).
 - [ ] Treasury Safe deployed on Fuji and mainnet, signers configured, threshold set.
 - [ ] Deploy script tested on Fuji end-to-end (deploy + Safe role grants + first mint).
-- [ ] Halborn audit complete; all High/Medium findings resolved.
-- [ ] Code4rena contest complete; finalists resolved.
+- [ ] External audit on tag `v1.1-audit` complete (Halborn / Zealynx / Cantina RFQ); all High/Medium findings resolved and fix commit re-reviewed.
 - [ ] WP final published; GitBook live.
 - [ ] Harneys BVI legal opinion received.
 - [ ] US counsel memorandum received.

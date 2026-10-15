@@ -74,7 +74,7 @@ SLT (ERC-20 + index-based view-only metadata; no ERC-4626 surface)
 | **Vector** | Compromise of 3 or more of the 5 Treasury Safe signers, granting unrestricted access to all admin roles. |
 | **Likelihood** | Very Low (3-of-5 quorum across diversified geographic and organizational signers). |
 | **Severity** | High — quorum holder can pause/unpause, change oracle parameters within hard bounds, and *propose* a Treasury Safe change. It **cannot** grant MINTER_ROLE after `lockMinterRole` (H-01 fix: sentinel sealed in constructor), **cannot** burn holder balances after `lockBurnSource` (M-01), and a Treasury Safe redirect only takes effect 24h after proposal and is cancellable (M-03). |
-| **Mitigation** | Code-level: `lockMinterRole(expectedMinter)`, `lockBurnSource()`, 24h treasury timelock. Operational: diversified signer set: founder (Onur Altan Tan), 2 Blockxell engineering, 1 Treasury Manager representative, 1 independent (intended: Hex Trust or Ogier representative). Safe transactions are public on-chain. |
+| **Mitigation** | Code-level: `lockMinterRole(expectedMinter)`, `lockBurnSource()`, 24h treasury timelock. Operational: diversified 3-of-5 signer set as listed in ARCHITECTURE §4 (founder, Blockxell engineering, Blockxell operations, Lidya treasury manager rep, independent external signer). Safe transactions are public on-chain. |
 | **Residual risk** | Out of scope for smart contract audit; mitigated through operational and key-management hygiene. |
 
 ### 3.4 Stablecoin Behavior Anomalies
@@ -131,7 +131,7 @@ SLT (ERC-20 + index-based view-only metadata; no ERC-4626 surface)
 
 | Item | Detail |
 |---|---|
-| **Vector** | Arithmetic overflow or significant precision loss in conversion math (`stableToSLT`, `sltToStable`, `convertToShares`, `convertToAssets`). |
+| **Vector** | Arithmetic overflow or significant precision loss in conversion math (`stableToSLT`, `sltToStable`, `sltForIndexValue`, `indexValueForSLT`). |
 | **Likelihood** | Solidity 0.8+ reverts on arithmetic overflow by default. Precision loss at 18-decimal scale is below 1 wei for all realistic inputs. |
 | **Severity** | None at current input ranges. |
 | **Mitigation** | Constants hoisted to compile-time values (`SLT_TO_STABLE_SCALE = 1e12`) so multiply happens before divide where possible. `maxMintAmount = $5M (5e12 in 6-dec)` × `SLT_TO_STABLE_SCALE (1e12)` × `INDEX_PRECISION (1e18)` = 5e42, well within uint256.max (~1.16e77). |

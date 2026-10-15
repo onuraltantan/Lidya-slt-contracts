@@ -10,9 +10,9 @@ Smart contracts for **SLT (Synthetic Liquidity Token)** V1 — Lidya Investments
 
 | Contract           | Lines | Purpose                                                                   |
 | ------------------ | ----- | ------------------------------------------------------------------------- |
-| `IndexOracle.sol`  | 282   | Stores the synthetic performance index. Bounds-checked (±5%/update), throttled (≥20h), pausable; M-02 staleness guard. |
-| `SLT.sol`          | 328   | ERC-20 + index-based read-only metadata. Non-redeemable. Sealed minter set (`lockMinterRole`) and burn source (`lockBurnSource`). |
-| `MintContract.sol` | 320   | Accepts 6-dec USDC/USDT, mints SLT at current index, forwards stable atomically to Treasury Safe; 24h treasury-change timelock. |
+| `IndexOracle.sol`  | 301   | Stores the synthetic performance index. Bounds-checked (±5%/update), throttled (≥20h), pausable; M-02 staleness guard. |
+| `SLT.sol`          | 355   | ERC-20 + index-based read-only metadata. Non-redeemable. Sealed minter set (`lockMinterRole`) and burn source (`lockBurnSource`). |
+| `MintContract.sol` | 322   | Accepts 6-dec USDC/USDT, mints SLT at current index, forwards stable atomically to Treasury Safe; 24h treasury-change timelock. |
 | Treasury Safe      | n/a   | Gnosis Safe (deployed off-chain via `safe.global`). 3-of-5 multisig.       |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full component diagram, roles matrix, and threat model.
@@ -33,9 +33,8 @@ forge install
 
 This pulls:
 
-- `OpenZeppelin/openzeppelin-contracts` (v5.x)
-- `smartcontractkit/chainlink-brownie-contracts`
-- `foundry-rs/forge-std`
+- `OpenZeppelin/openzeppelin-contracts` (v5.6.1, pinned in `foundry.lock`)
+- `foundry-rs/forge-std` (v1.16.2, pinned in `foundry.lock`)
 
 ### Build
 
