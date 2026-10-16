@@ -192,4 +192,19 @@ Lock sequence executed inside the deploy script: `lockMinterRole(MintContract)` 
 
 Pending for 16 Oct (time-gated on-chain, cannot be forced): `updateIndex` after 20h (≥ unix `1792157342`, 13:29 UTC), `executeTreasurySafe()` after 24h (≥ `1792171830`, 17:30 UTC).
 
+### 16 Oct follow-up
+
+Executed 16 Oct 2026 ~17:41 UTC (unix 1792172486+) from deployer `0x471D…9B47`, tag `v1.1-audit` (c6bdfda).
+
+| Step | Action | Tx / Result |
+|------|--------|-------------|
+| 1a | `updateIndex(1.01e18)` on IndexOracle (87,144 s since last update ≥ 72,000 s) | `0xc0b92637ff7b0d0338834b7e7e88d109de840f609f48b29869e8507a88da068e` — block 59564311, status 1 |
+| 1b | Read-back | `pricePerShare()` = 1.01e18 · `isFresh()` = true · `lastUpdateTimestamp()` = 1792172515 |
+| 1c | Immediate `updateIndex(1.02e18)` | reverted `IndexOracle_TooSoon(uint256,uint256)` (selector `0x4624ed56`) — throttle enforced |
+| 1d | Immediate `updateIndex(1.07e18)` (+5.9 %) | reverted `IndexOracle_TooSoon` — throttle check (L177) precedes bounds check (L184), so `IndexOracle_OutOfBounds` cannot be observed on-chain inside the 20h window; bounds path covered by forge tests |
+| 2a | `executeTreasurySafe()` on MintContract (now ≥ 1792171830) | `0xb215a973fd1a985a1f7c49c1ddfe07c12b3e150a8d71eaedce6d83122aeee852` — block 59564342, status 1 |
+| 2b | Read-back | `treasurySafe()` = `0x471D1427e78ffF8fF7abEb17229387B5Bf459B47` · `pendingTreasurySafe()` = `0x0` · `pendingTreasurySafeExecutableAt()` = 0 |
+
+Fuji v1.1-audit E2E complete. Next oracle update window opens at unix 1792244515 (17 Oct ~13:41 UTC).
+
 Dashboard app (`/projects/blockxell/lidya/app`) still points at the Jul-2026 Fuji deployment; switching it needs a `.env.local` address update + `next build` + pm2 restart (not done in this round).
