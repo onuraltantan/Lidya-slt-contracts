@@ -6,6 +6,7 @@ import {SLT} from "../src/SLT.sol";
 import {IndexOracle} from "../src/IndexOracle.sol";
 import {MintContract} from "../src/MintContract.sol";
 import {MockStable} from "./invariants/Handler.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /// @title v1.1-audit hardening tests — M-01, M-02, M-03, L-04 (Moment Research review, Sep 2026)
 contract HardeningV11Test is Test {
@@ -826,10 +827,10 @@ contract HardeningV11Test is Test {
 }
 
 /// @dev 6-decimal token whose decimals can be changed after deployment (simulates an upgrade).
-contract MutableDecimalsToken is MockStable {
+contract MutableDecimalsToken is ERC20 {
     uint8 internal _dec = 6;
 
-    constructor() MockStable("Mutable", "MUT") {}
+    constructor() ERC20("Mutable", "MUT") {}
 
     function setDecimals(
         uint8 d
