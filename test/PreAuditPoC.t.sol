@@ -139,7 +139,8 @@ contract PreAuditPoC is Test {
         for (uint256 i = 0; i < 36; i++) {
             t += 20 hours;
             vm.warp(t);
-            uint256 next = oracle.pricePerShare() * 95 / 100;
+            uint256 cur = oracle.pricePerShare();
+            uint256 next = cur - (cur * 500) / 10_000; // exactly -5.00% (delta floored)
             vm.prank(updater);
             oracle.updateIndex(next);
         }

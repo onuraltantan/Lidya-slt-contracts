@@ -250,11 +250,14 @@ contract PreAuditPoC2 is Test {
     // token is "paused" and every ordinary transfer is frozen.
     // ==================================================================
     function test_PoC_AdminBurnWorksWhilePaused() public {
-        // Give the treasury-controlled address some SLT via a normal mint.
-        usdc.mint(safe, 2_000e6);
-        vm.startPrank(safe);
+        // Give the treasury-controlled address some SLT: alice mints and transfers to the Safe.
+        // (The Safe cannot mint for itself: the L-6 receipt check sees a zero-delta self-transfer.)
+        vm.startPrank(alice);
         usdc.approve(address(mintC), 2_000e6);
         uint256 bal = mintC.mintSLT(address(usdc), 2_000e6);
+        slt.transfer(safe, bal);
+        vm.stopPrank();
+        vm.startPrank(safe);
         slt.setBurnSource(safe, true);
         slt.pause(); // freeze all transfers
         vm.stopPrank();

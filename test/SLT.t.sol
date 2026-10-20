@@ -5,19 +5,31 @@ import {Test} from "forge-std/Test.sol";
 import {SLT} from "../src/SLT.sol";
 import {IndexOracle} from "../src/IndexOracle.sol";
 
+/// @dev Minimal stand-in for MintContract: exposes slt() so lockMinterRole() accepts it (M-4).
+contract MockMinter {
+    address public slt;
+
+    constructor(
+        address _slt
+    ) {
+        slt = _slt;
+    }
+}
+
 contract SLTTest is Test {
     SLT internal slt;
     IndexOracle internal oracle;
 
     address internal admin = address(0xA1);
     address internal pauser = address(0xA2);
-    address internal minter = address(0xA3);
+    address internal minter; // MockMinter, set in setUp
     address internal alice = address(0xB1);
     address internal bob = address(0xB2);
 
     function setUp() public {
         oracle = new IndexOracle(1e18, admin, admin, admin);
         slt = new SLT(admin, pauser, address(oracle));
+        minter = address(new MockMinter(address(slt)));
 
         // Cache role before pranking — vm.prank only affects the immediately
         // following external call, and SLT.MINTER_ROLE() would consume it
