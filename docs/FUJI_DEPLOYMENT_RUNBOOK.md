@@ -208,3 +208,40 @@ Executed 16 Oct 2026 ~17:41 UTC (unix 1792172486+) from deployer `0x471D…9B47`
 Fuji v1.1-audit E2E complete. Next oracle update window opens at unix 1792244515 (17 Oct ~13:41 UTC).
 
 Dashboard app (`/projects/blockxell/lidya/app`) still points at the Jul-2026 Fuji deployment; switching it needs a `.env.local` address update + `next build` + pm2 restart (not done in this round).
+
+---
+
+## Fuji deployment — v1.1.1-audit (20 Oct 2026, ~15:00 UTC)
+
+`forge script script/DeployFuji.s.sol:DeployFuji --rpc-url $FUJI_RPC_URL --broadcast --slow` · deployer/test-treasury `0x471D1427e78ffF8fF7abEb17229387B5Bf459B47` · chain 43113 (script now asserts it) · code = tag `v1.1.1-audit`
+
+| Contract | Address |
+|---|---|
+| IndexOracle | `0xb91d9442e0AfCCA7522E3C35a7E18FB5c07DC99C` |
+| SLT | `0x261a9cFb8702A0865222fbC0f088fd5908F65bc0` |
+| MintContract | `0x43b92Acf627F3893B3212697236758d9b1bB640F` |
+| tUSDC (mock, 6 dec) | `0xff4C81b2660E73bEBF660C94e53d2230C5D565c7` |
+| tUSDT (mock, 6 dec) | `0x680134C0c613EFDf9498D771072562141D5bf059` |
+
+Whitelist seeded in the constructor; script verified `minterCount==1`, `burnSourceCount==1`, `authorizedBurnSource(treasury)` before `lockMinterRole(MintContract)` + `lockBurnSource(treasury)`. Post-deploy read-back: `minterRoleLocked=true · minterCount=1 · burnSourceLocked=true · burnSourceCount=1 · acceptedStablecoin(tUSDC/tUSDT)=true · STABLECOIN_DELAY=86400 · MIN_INITIAL_INDEX=1e17`.
+
+### E2E (same day; every revert checked against the expected custom-error selector)
+
+| Step | Result | Tx / selector |
+|---|---|---|
+| Treasury (deployer) tries to mint for itself | reverts `MintContract_TransferShortfall` — self-transfer has zero receipt delta (L-6, intended) | `0xc899fbf2` |
+| Test user `0x5E2f…194A`: `mintSLT(tUSDC, 2000e6, minSltOut=2000e18, deadline=now+1h)` | ok → 2,000 SLT; treasury tUSDC +2,000 | `0xfa4c7445d32bfdfb44f26d3cd52becc755e6f877acfa78a764726be383f0a6d5` |
+| Test user: legacy `mintSLT(tUSDC, 1000e6)` | ok → +1,000 SLT (total 3,000) | `0xb1eead0450721c78b3f95a3356a408c7bcb357b0bdb7896ace4c5fa318d852dd` |
+| `minSltOut` 1001e18 for 1000 tUSDC | reverts `MintContract_SlippageExceeded` | `0xad1ec663` |
+| `deadline = now − 1` | reverts `MintContract_DeadlineExpired` | `0x560163b4` |
+| H-1: delist tUSDT (immediate) → `accepted=false` | ok | `0xb256137d…` |
+| H-1: re-propose tUSDT → `accepted` still false, `pendingAt = 1792574352` | ok | `0x4c86445b…` |
+| H-1: `executeStablecoinAccepted` before delay | reverts `MintContract_StablecoinDelayNotElapsed` | `0x413cc072` |
+| `setBurnSource(0xdead,true)` after lock | reverts `SLT_BurnSourceLocked` | `0x8c11ed26` |
+| `lockBurnSource(treasury)` again | reverts `SLT_BurnSourceAlreadyLocked` | `0x447881e4` |
+| `grantRole(MINTER_ROLE, 0xdead)` after lock | reverts `AccessControlUnauthorizedAccount` | `0xe2517d3f` |
+| L-5: `setTreasurySafe(MintContract)` | reverts `MintContract_InvalidTreasurySafe` | `0x3ef0e91d` |
+| `pause()` → `unpause()` | ok (`paused` true → false) | `0xf89e0340…`, `0x6eff79de…` |
+
+Pending for 21 Oct (time-gated on-chain): `updateIndex` after 20h; `executeStablecoinAccepted(tUSDT)` at ≥ unix `1792574352` (21 Oct 2026 18:19 UTC) — scheduled follow-up will run both and append results here.
+
