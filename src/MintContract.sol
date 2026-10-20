@@ -238,7 +238,6 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
         for (uint256 i = 0; i < initialStablecoins.length; i++) {
             address token = initialStablecoins[i];
             if (token == address(0)) revert MintContract_ZeroAddress();
-            // slither-disable-next-line calls-loop
             _requireSixDecimals(token);
             acceptedStablecoin[token] = true;
             emit StablecoinWhitelistUpdated(token, true);
@@ -385,6 +384,9 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     function _requireSixDecimals(
         address token
     ) internal view {
+        // Called from the constructor seed loop (≤2 deployer-supplied tokens) and from the timelocked
+        // whitelist path; the loop is bounded and the callee set is admin-chosen, not user-supplied.
+        // slither-disable-next-line calls-loop
         try IERC20Metadata(token).decimals() returns (uint8 dec) {
             if (dec != EXPECTED_STABLE_DECIMALS) revert MintContract_UnexpectedDecimals(token, dec);
         } catch {
