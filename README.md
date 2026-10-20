@@ -2,7 +2,7 @@
 
 Smart contracts for **SLT (Synthetic Liquidity Token)** V1 — Lidya Investments quant-arbitrage performance tokenization on Avalanche C-Chain.
 
-> **Status**: v1.1.1-audit — contract set frozen for external audit (tag `v1.1.1-audit`). Not yet
+> **Status**: v1.1.1-audit — contract set frozen for external audit (tag `v1.1.1-audit`, cut after the gate run recorded in `SECURITY_CHECK_20Oct2026.md`). Not yet
 > deployed to mainnet; Fuji testnet live. External audit (RFQ: Halborn / Zealynx / Cantina) is the
 > gating step before mainnet deploy. Latest gate results: `SECURITY_CHECK_20Oct2026.md`.
 
@@ -11,8 +11,8 @@ Smart contracts for **SLT (Synthetic Liquidity Token)** V1 — Lidya Investments
 | Contract           | Lines | Purpose                                                                   |
 | ------------------ | ----- | ------------------------------------------------------------------------- |
 | `IndexOracle.sol`  | 318   | Stores the synthetic performance index. Bounds-checked (±5%/update), throttled (≥20h), pausable; M-02 staleness guard. |
-| `SLT.sol`          | 400   | ERC-20 + index-based read-only metadata. Non-redeemable. Sealed minter set (`lockMinterRole(expected)`) and burn source (`lockBurnSource(expected)`). |
-| `MintContract.sol` | 440   | Accepts 6-dec USDC/USDt (seeded at deploy; additions timelocked 24h), mints SLT at current index with optional `minSltOut`/`deadline`, forwards stable atomically to Treasury Safe with receipt check; 24h treasury-change timelock. |
+| `SLT.sol`          | 401   | ERC-20 + index-based read-only metadata. Non-redeemable. Sealed minter set (`lockMinterRole(expected)`) and burn source (`lockBurnSource(expected)`). |
+| `MintContract.sol` | 463   | Accepts 6-dec USDC/USDt (seeded at deploy; additions timelocked 24h), mints SLT at current index with optional `minSltOut`/`deadline`, forwards stable atomically to Treasury Safe with receipt check; 24h treasury-change timelock. |
 | Treasury Safe      | n/a   | Gnosis Safe (deployed off-chain via `safe.global`). 3-of-5 multisig.       |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full component diagram, roles matrix, and threat model.
@@ -112,6 +112,7 @@ src/
   interfaces/
     ISLT.sol
     IIndexOracle.sol
+    IMintContractView.sol     # slt() view used by lockMinterRole's wiring check (M-4)
 test/
   SLT.t.sol
   MintContract.t.sol

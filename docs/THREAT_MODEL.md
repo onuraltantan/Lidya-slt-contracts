@@ -84,7 +84,7 @@ SLT (ERC-20 + index-based view-only metadata; no ERC-4626 surface)
 | **Vector** | USDT historically permitted approve-race attacks (must zero allowance before re-approving); some non-standard tokens silently fail without reverting; USDC implements blacklisting. |
 | **Likelihood** | USDT approve race is negligible at MintContract level (we never re-approve from MintContract — we only `safeTransferFrom`). USDC blacklist could theoretically block deposits or transfers from blacklisted addresses. |
 | **Severity** | Low — affects individual blacklisted users, not protocol integrity. |
-| **Mitigation** | All ERC-20 calls go through `SafeERC20`, which checks return values and reverts on failure. Whitelist is finite (USDC + USDT.e on V1). Adding a new stablecoin requires 3-of-5 Treasury Safe consent. |
+| **Mitigation** | All ERC-20 calls go through `SafeERC20`, which checks return values and reverts on failure. Whitelist is finite (native USDC + USDt, seeded in the constructor). Adding a stablecoin requires CONFIG_ROLE (3-of-5 Treasury Safe) **and** a 24h propose/execute delay with a decimals re-check (H-1); delisting is immediate. |
 | **Test coverage** | Standard SafeERC20 path covered by `test_Mint_HappyPath` and edge revert tests. |
 
 ### 3.5 Front-Running at Oracle Update Boundary
@@ -124,7 +124,7 @@ SLT (ERC-20 + index-based view-only metadata; no ERC-4626 surface)
 | **Vector** | An unauthorized address attempts to grant itself or an accomplice MINTER_ROLE / BURNER_ROLE / CONFIG_ROLE to mint SLT, burn user tokens, or whitelist a malicious stablecoin. |
 | **Likelihood** | Very low — role grants require DEFAULT_ADMIN_ROLE, held only by the Treasury Safe. |
 | **Severity** | High if exploited. |
-| **Mitigation** | OpenZeppelin AccessControl pattern. DEFAULT_ADMIN_ROLE is granted only to the Treasury Safe in constructor. **History (H-01, Moment Research Sep 2026):** in `v1.1-prereview` the `MINTER_ADMIN_LOCK` sentinel could be granted by DEFAULT_ADMIN *before* `lockMinterRole()`, creating a permanent backdoor to grant MINTER_ROLE after the lock — an admin-path backdoor did exist and was exploitable (1,000,000 SLT in the PoC). Fixed in `b088846`: the sentinel is made its own role-admin in the constructor, so it can never be held; `lockMinterRole(expectedMinter)` additionally refuses to seal unless the minter set is exactly `{expectedMinter}` (L-04). After the lock, no address can grant/revoke MINTER_ROLE. BURNER_ROLE grants remain possible but are useless against holders once `lockBurnSource()` has run (M-01). |
+| **Mitigation** | OpenZeppelin AccessControl pattern. DEFAULT_ADMIN_ROLE is granted only to the Treasury Safe in constructor. **History (H-01, Moment Research Sep 2026):** in `v1.1-prereview` the `MINTER_ADMIN_LOCK` sentinel could be granted by DEFAULT_ADMIN *before* `lockMinterRole()`, creating a permanent backdoor to grant MINTER_ROLE after the lock — an admin-path backdoor did exist and was exploitable (1,000,000 SLT in the PoC). Fixed in `b088846`: the sentinel is made its own role-admin in the constructor, so it can never be held; `lockMinterRole(expectedMinter)` additionally refuses to seal unless the minter set is exactly `{expectedMinter}` (L-04) and `expectedMinter` is a deployed contract whose `slt()` returns this token (M-4). After the lock, no address can grant/revoke MINTER_ROLE. BURNER_ROLE grants remain possible but are useless against holders once `lockBurnSource(expectedSource)` has run (M-01/M-3). |
 | **Test coverage** | `test_Constructor_RevertOnZeroAdmin`, `test_PoC_LockSentinelCannotBePreGranted`, `test_PoC_SentinelUnheldBeforeAndAfterLock`, `test_L04_*`, `testFuzz_M01_HolderBalanceUntouchableAfterLock`, invariants `invariant_SingleMinterForever`, `invariant_HolderBalancesUntouchableAfterBurnLock`, role authorization tests on every admin function (`test_Set*_RevertWhenUnauthorized`). |
 
 ### 3.9 Integer Overflow / Precision Loss
@@ -169,7 +169,6 @@ The following are explicitly outside the V1 smart contract audit scope:
 | `IndexOracle.updateIndex()` | `block.timestamp` comparisons are `slither-disable-next-line timestamp` annotated. Validator skew (~12s) << throttle (20h). |
 | `IndexOracle.stableToSLT/sltToStable` | Refactored to use `SLT_TO_STABLE_SCALE` compile-time constant to avoid divide-before-multiply pattern. Slither now reports zero findings on these functions. |
 | `IndexOracle.updateIndex` bound (L-1) | Accept/reject is evaluated exactly as `delta * BPS > maxChangeBps * previous` (no integer division), so 5.0099% is rejected and exactly 5.0000% is the last accepted step. `deltaBps` is still computed (rounded) for the event only. |
-| `IndexOracle.updateIndex` bound (L-1) | Accept/reject is evaluated exactly as `delta * BPS > maxChangeBps * previous` (no integer division), so 5.0099% is rejected and exactly 5.0000% is the last accepted step. `deltaBps` is still computed (rounded) for the event only. |
 | `IndexOracle.updateIndex` int256 cast | `int256(deltaBps)` is provably safe — `deltaBps ≤ maxChangeBps ≤ 500` (hard ceiling), well below `int256.max`. Annotated with `forge-lint: disable-next-line(unsafe-typecast)`. |
 | `SLT.adminBurn` | Intentionally NOT gated by `Pausable` so reconciliation remains possible during emergencies. Documented in NatSpec. |
 | `MintContract.mintSLT` | Atomic forward pattern: `safeTransferFrom(msg.sender, treasurySafe, amount)` — MintContract never holds stable balance at rest. Invariant-tested under stateful fuzz. |
@@ -211,9 +210,9 @@ All v1.0 external function signatures are unchanged. `setTreasurySafe(address)` 
 
 ---
 
-## 7. Recommendation Summary for the External Audit (tag `v1.1-audit`)
+## 7. Recommendation Summary for the External Audit (tag `v1.1.1-audit`)
 
-1. **Primary scope**: 3 Solidity files in `src/` + 2 interfaces, plus `script/Deploy.s.sol` and the post-deploy lock sequence. Treasury Safe is standard Gnosis Safe v1.4 — out of custom-code scope.
+1. **Primary scope**: 3 Solidity files in `src/` + 3 interfaces (`ISLT`, `IIndexOracle`, `IMintContractView`), plus `script/Deploy.s.sol` and the post-deploy lock sequence. Treasury Safe is standard Gnosis Safe v1.4 — out of custom-code scope.
 2. **Design decisions to assess, not remove**: non-redeemable / immutable / permissionless-transfer structure; M-04 (Section 5); in-contract treasury timelock vs. `TimelockController`.
 3. **Optional**: Mythril / Manticore symbolic execution as part of standard pipeline.
 4. **Test base**: 190 tests, all passing; coverage and invariant logs in `SECURITY_CHECK_20Oct2026.md`.

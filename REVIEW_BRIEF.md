@@ -35,7 +35,7 @@ Nothing has been sent to auditors yet. Four changes were identified in our inter
 
 | # | Finding (v1.0 code) | Applied change (v1.1) |
 |---|---|---|
-| 1 | `SLT.adminBurn(from, amount)`: BURNER_ROLE could burn **any holder's** balance — contradicted "issuer cannot touch holder balances" | `authorizedBurnSource` allowlist added; v1.1-audit: Treasury Safe authorized at construction + `lockBurnSource()` one-way seal (M-01); `adminBurn` reverts with `SLT_BurnSourceNotAuthorized` unless `from` is listed. List managed by DEFAULT_ADMIN via `setBurnSource()`. Trade-off accepted: no forced recovery of mis-sent mints. |
+| 1 | `SLT.adminBurn(from, amount)`: BURNER_ROLE could burn **any holder's** balance — contradicted "issuer cannot touch holder balances" | `authorizedBurnSource` allowlist added; v1.1-audit: Treasury Safe authorized at construction + `lockBurnSource(expectedSource)` one-way seal (M-01/M-3; `setBurnSource` only until sealed); `adminBurn` reverts with `SLT_BurnSourceNotAuthorized` unless `from` is listed. List managed by DEFAULT_ADMIN via `setBurnSource()`. Trade-off accepted: no forced recovery of mis-sent mints. |
 | 2 | DEFAULT_ADMIN could `grantRole(MINTER_ROLE, x)` → a compromised Treasury Safe could self-grant mint | `lockMinterRole()` added (v1.1-audit: `lockMinterRole(expectedMinter)`, sentinel sealed in constructor — H-01/L-04): one-way, sets MINTER_ROLE's role-admin to the never-granted `MINTER_ADMIN_LOCK` sentinel (which is its own admin). Deployment sequence: deploy → grant MINTER to MintContract → lock. Trade-off accepted: MintContract can never be replaced without a token redeploy. |
 | 3 | Docs said "±5%/day" but the bound was **per update**; admin could set interval to 1 min and bound to 20% | Hard limits tightened: `maxChangeBps` ceiling 2000→**500** (default = ceiling), `minUpdateInterval` floor 1 min→**20 hours** (default 1h→20h, range [20h, 1d]), `gracePeriod` floor 1h→**1 day** (so routine cadence never trips staleness). Documented ±5%-per-daily-update is now a code guarantee. |
 | 4 | Token name in code was "Synthetic **Liquid** Token"; all documents say "Synthetic **Liquidity** Token" (immutable post-deploy) | Name fixed to "Synthetic Liquidity Token". |
@@ -53,8 +53,8 @@ Also worth checking: `setTreasurySafe` redirects all future deposits with a sing
 | Unrestricted transfer | Confirmed | OK |
 | Atomic settlement to treasury Safe | Confirmed | OK |
 | "Issuer cannot touch holder balances" | Enforced via burn-source allowlist | fixed in v1.1 (change 1) |
-| "Compromised multisig cannot bypass mint flow" | Enforced via `lockMinterRole(expectedMinter)` post-deploy step + constructor-sealed `MINTER_ADMIN_LOCK` (H-01/L-04) | fixed in v1.1-audit — verify the lock sequence |
-| "±5% per day" index bound | Hard limits: 500 bps ceiling, 20h interval floor | fixed in v1.1 (change 3) |
+| "Compromised multisig cannot bypass mint flow" | Enforced via `lockMinterRole(expectedMinter)` post-deploy step + constructor-sealed `MINTER_ADMIN_LOCK` + `slt()` wiring check (H-01/L-04/M-4) | fixed in v1.1.1-audit — verify the lock sequence |
+| "±5% per day" index bound | ±5% **per update**, updates ≥20h apart (≈ one step/day) — not a per-day cap; bound evaluated exactly (L-1) | fixed in v1.1 (change 3), tightened in v1.1.1 |
 | "Pause covers transfers, mints, burns" | Burns NOT pausable (deliberate) | docs corrected (ARCHITECTURE §2, THREAT_MODEL §5); code unchanged |
 | Eligibility controls at mint entry | UI/entity level only; contract is permissionless | disclosed; AML programme in design |
 

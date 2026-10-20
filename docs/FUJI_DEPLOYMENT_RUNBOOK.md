@@ -141,7 +141,7 @@ Bu deployer (sen) tarafından yapılacak. Ben CLI komutunu hazırlarım, sen Met
 ## Sonraki Adımlar (Fuji Sonrası)
 
 Fuji'de smoke test geçince:
-- Tag `v1.1-audit` → audit paketi (scope brief + NDA) → Halborn / Zealynx / Cantina RFQ
+- Tag `v1.1.1-audit` → audit paketi (scope brief + NDA) → Halborn / Zealynx / Cantina RFQ
 - Dış audit + fix-verification turu
 - Mainnet deploy (gerçek 3-of-5 Treasury Safe ile)
 

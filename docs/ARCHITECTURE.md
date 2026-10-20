@@ -51,7 +51,6 @@ Stores the synthetic performance index for SLT.
   - `GUARDIAN_ROLE` — Treasury Safe; pauses updates during anomaly.
 - **Invariants**:
   - Constructor `initialIndex` must lie in `[0.1, 10.0]` (1e17–1e19) — a typo guard, not a running band (L-2).
-  - Constructor `initialIndex` must lie in `[0.1, 10.0]` (1e17–1e19) — a typo guard, not a running band (L-2).
   - Updates throttled to `minUpdateInterval` (20 hours default = hard floor; ceiling 1 day).
   - Per-update change bounded to `maxChangeBps` (500 bps = 5% default = hard ceiling; admin may only lower it),
     evaluated exactly (`delta * 10000 > maxBps * previous` rejects — no rounding slack, L-1).
@@ -94,12 +93,14 @@ Accepts approved stablecoins and mints SLT at the current index price.
 - **Inherits**: OZ `AccessControl`, `Pausable`, `ReentrancyGuard`.
 - **Roles**:
   - `DEFAULT_ADMIN_ROLE` — Treasury Safe.
-  - `CONFIG_ROLE` — Treasury Safe; updates accepted stablecoin list and mint limits.
+  - `CONFIG_ROLE` — Treasury Safe; proposes (24h) / executes / cancels stablecoin additions, delists immediately; sets mint limits.
   - `PAUSER_ROLE` — Treasury Safe.
 - **Mint flow**:
-  1. User calls `mintSLT(stablecoin, amount)`.
-  2. Contract checks: stablecoin whitelisted, amount within bounds, oracle fresh.
-  3. Stablecoin pulled from user via `safeTransferFrom`, forwarded to Treasury Safe in same tx.
+  1. User calls `mintSLT(stablecoin, amount)` or `mintSLT(stablecoin, amount, minSltOut, deadline)`.
+  2. Contract checks: deadline not passed, stablecoin whitelisted, amount within bounds, oracle fresh,
+     SLT out ≥ `minSltOut`.
+  3. Stablecoin pulled from user straight to the Treasury Safe via one `safeTransferFrom`; the Safe's
+     balance delta must equal `amount` (L-6 receipt check).
   4. SLT minted to user at current `pricePerShare`.
   5. Event emitted with stable amount, SLT amount, index used.
 - **Critical invariant**: Contract NEVER holds stablecoin balance after a successful mint
@@ -139,7 +140,7 @@ Off-the-shelf Gnosis Safe deployed via `safe.global` UI.
 | `MINTER_ROLE` (SLT)     | MintContract   | Mint SLT to depositors — sole holder, sealed by `lockMinterRole(MintContract)` |
 | `BURNER_ROLE` (SLT)     | Treasury Safe  | Reconciliation burns from `authorizedBurnSource` only (= Treasury Safe, sealed by `lockBurnSource`) |
 | `PAUSER_ROLE`           | Treasury Safe  | Emergency pause                              |
-| `CONFIG_ROLE` (Mint)    | Treasury Safe  | Whitelist stablecoins, adjust mint limits    |
+| `CONFIG_ROLE` (Mint)    | Treasury Safe  | Propose → 24h → execute stablecoin additions (H-1); instant delist; mint limits |
 | `ORACLE_UPDATER_ROLE`   | Chainlink feed | Push new index values                        |
 | `GUARDIAN_ROLE` (Oracle)| Treasury Safe  | Pause oracle in anomalies                    |
 
