@@ -2,7 +2,7 @@
 **Version under review: v1.1-prereview (v1.0-audit + four applied changes, see §4) · 22 Aug 2026**
 **Prepared for: independent preview ahead of formal audit (Zealynx / Cantina)**
 **Status: compiles clean (solc 0.8.24, 0 errors / 0 warnings) · full Foundry suite green (109/109 incl. invariants) · Slither clean on project contracts (see SECURITY_CHECK_22Aug2026.md).**
-**Superseded in v1.1-audit (15 Oct 2026): 152/152 tests, 100% line/branch/function coverage on `src/`, Slither 0 findings — see `SECURITY_CHECK_15Oct2026.md`.**
+**Superseded in v1.1.1-audit (20 Oct 2026): 190/190 tests, 100% line/branch/function coverage on `src/`, Slither 0 findings — see `SECURITY_CHECK_20Oct2026.md`.**
 
 ## 1. What this is
 
@@ -63,7 +63,7 @@ Also worth checking: `setTreasurySafe` redirects all future deposits with a sing
 1. Adversarial pass on §3 — especially any hidden redemption-like path or holder claim.
 2. Review the four applied changes (§4) — sound implementation? Better alternative? Any new attack surface introduced (e.g. burn-source list management, the lock sentinel)?
 3. Anything the formal auditors (Zealynx/Cantina) would flag that we can fix cheaply now.
-4. Test coverage gaps worth closing pre-audit (suite was 109/109 at pre-review, 152/152 at v1.1-audit; new v1.1 paths are covered but breadth/depth suggestions welcome).
+4. Test coverage gaps worth closing pre-audit (suite was 109/109 at pre-review, 190/190 at v1.1.1-audit; new v1.1 paths are covered but breadth/depth suggestions welcome).
 
 Planned pipeline after your pass: optional second static scanner → formal audit (Zealynx/Cantina) from this v1.1 baseline.
 

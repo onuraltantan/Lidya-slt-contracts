@@ -6,7 +6,7 @@ SLT (Synthetic Liquidity Token) V1 is a permissionless ERC-20 token deployed on 
 on-chain value tracks an off-chain performance index (the ZSB SSF arbitrage strategy) via a
 Chainlink-powered custom data feed. SLT is **non-redeemable** — holders exit only via secondary
 markets. The token is designed to remain a synthetic, non-security instrument under BVI law
-(pending Harneys legal opinion).
+(BVI regulatory memorandum obtained from BVI counsel, 1 Jul 2026).
 
 ## Component Diagram
 
@@ -50,8 +50,11 @@ Stores the synthetic performance index for SLT.
   - `ORACLE_UPDATER_ROLE` — Chainlink adapter; pushes new index values.
   - `GUARDIAN_ROLE` — Treasury Safe; pauses updates during anomaly.
 - **Invariants**:
+  - Constructor `initialIndex` must lie in `[0.1, 10.0]` (1e17–1e19) — a typo guard, not a running band (L-2).
+  - Constructor `initialIndex` must lie in `[0.1, 10.0]` (1e17–1e19) — a typo guard, not a running band (L-2).
   - Updates throttled to `minUpdateInterval` (20 hours default = hard floor; ceiling 1 day).
-  - Per-update change bounded to `maxChangeBps` (500 bps = 5% default = hard ceiling; admin may only lower it).
+  - Per-update change bounded to `maxChangeBps` (500 bps = 5% default = hard ceiling; admin may only lower it),
+    evaluated exactly (`delta * 10000 > maxBps * previous` rejects — no rounding slack, L-1).
     The bound is **per update**, not per day; with the 20h floor the worst-case drift is one ±5% step per 20h.
     There is deliberately **no absolute index floor/ceiling** (accepted finding M-04, see THREAT_MODEL §5).
   - `isFresh()` returns `false` after `gracePeriod` (1 day default; range 1–7 days).
@@ -67,16 +70,18 @@ The user-facing ERC-20 token.
 - **Roles**:
   - `DEFAULT_ADMIN_ROLE` — Treasury Safe; manages role grants.
   - `MINTER_ROLE` — `MintContract` only. Sealed post-deploy by `lockMinterRole(expectedMinter)`
-    (one-way): the call refuses unless `expectedMinter` holds the role **and** it is the only holder
-    (`minterCount == 1`), then sets the role-admin to the `MINTER_ADMIN_LOCK` sentinel. The sentinel
+    (one-way): the call refuses unless `expectedMinter` holds the role, is the only holder
+    (`minterCount == 1`), **and** is a deployed contract whose `slt()` returns this token (M-4), then sets the
+    role-admin to the `MINTER_ADMIN_LOCK` sentinel. The sentinel
     is its own admin from the constructor, so it can never be granted to anyone (H-01 / L-04).
   - `BURNER_ROLE` — Treasury Safe only; reconciliation and erroneous-mint correction. `adminBurn`
     only works on addresses in `authorizedBurnSource`; the Treasury Safe is authorized at construction
-    and `lockBurnSource()` (one-way) seals the set post-deploy. The lock **refuses unless the set is exactly
-    one address** (`burnSourceCount == 1`), so a pre-lock `setBurnSource` addition cannot be frozen in by
-    mistake. After the lock **no role can ever burn a holder balance** (M-01) — enforced in code, not policy.
-  - `PAUSER_ROLE` — Treasury Safe; emergency pause for holder transfers and mints. **`adminBurn` is
-    not pausable** (reconciliation must work while paused).
+    and `lockBurnSource(expectedSource)` (one-way) seals the set post-deploy. The lock **refuses unless the set
+    is exactly `{expectedSource}`** (`authorizedBurnSource[expectedSource] && burnSourceCount == 1`), so a
+    pre-lock `setBurnSource` mistake or swap cannot be frozen in. After the lock **no role can ever burn a holder balance** (M-01) — enforced in code, not policy.
+  - `PAUSER_ROLE` — Treasury Safe; **global emergency brake** for holder transfers and `mint()`. **`adminBurn`
+    is not pausable** (reconciliation must work while paused). Not an address-level restriction: no allowlist,
+    denylist, freeze or forced transfer exists (see THREAT_MODEL §5, "Global pause").
 - **Index-based read-only metadata** (18-dec index units, deliberately *not* ERC-4626 names):
   `pricePerShare()`, `isFresh()`, `lastUpdateTimestamp()`, `syntheticTotalValue()`,
   `sltForIndexValue()`, `indexValueForSLT()`. **No `deposit/withdraw/redeem/totalAssets/convertTo*`.**
@@ -99,8 +104,14 @@ Accepts approved stablecoins and mints SLT at the current index price.
   5. Event emitted with stable amount, SLT amount, index used.
 - **Critical invariant**: Contract NEVER holds stablecoin balance after a successful mint
   (verified by `invariant_MintContractHoldsNoUSDC/USDT`).
-- **Stablecoin whitelist**: `setStablecoinAccepted(token, true)` reverts unless `token.decimals() == 6`
-  (conversion math assumes 6-dec); delisting is never blocked.
+- **Stablecoin whitelist (H-1)**: seeded in the constructor (USDC, USDt; each must report 6 decimals — the
+  conversion math assumes 6-dec). Later additions are timelocked: `setStablecoinAccepted(token, true)` *proposes*,
+  `executeStablecoinAccepted(token)` applies after `STABLECOIN_DELAY = 24h` (decimals re-checked),
+  `cancelStablecoinProposal(token)` aborts. Delisting is immediate and cancels any pending proposal.
+- **Slippage protection (M-1)**: `mintSLT(stable, amount, minSltOut, deadline)` reverts if the SLT out would be
+  below the caller's floor or the deadline has passed; the 2-arg `mintSLT` is kept for interface stability.
+- **Receipt check (L-6)**: the Treasury Safe's balance is read before/after the pull; any shortfall reverts.
+  Side effect: the Safe cannot mint for itself (zero-delta self-transfer) — intended.
 - **Treasury Safe change (M-03)**: `setTreasurySafe(new)` only *proposes*; `executeTreasurySafe()` applies
   it after `TREASURY_SAFE_DELAY = 24h`; `cancelTreasurySafe()` aborts. Deposits keep flowing to the
   current safe until execution. In-contract timelock — no external `TimelockController`.
@@ -153,20 +164,20 @@ Off-the-shelf Gnosis Safe deployed via `safe.global` UI.
 
 ## Audit Targets
 
-- **External audit** on tag `v1.1-audit`: RFQ to Halborn / Zealynx / Cantina — full audit of SLT,
+- **External audit** on tag `v1.1.1-audit`: RFQ to Halborn / Zealynx / Cantina — full audit of SLT,
   MintContract, IndexOracle + deploy script and role topology. One fix-verification round included.
-- **Pre-audit assurance**: independent pre-review (Moment Research, Sep 2026), 152 Foundry tests,
-  100% line/branch/function coverage on `src/`, 11 stateful invariants, Slither 0 findings
-  (`SECURITY_CHECK_15Oct2026.md`).
+- **Pre-audit assurance**: independent pre-review (Moment Research, Sep 2026) + second independent review
+  (Oct 2026, all findings closed in v1.1.1), 190 Foundry tests, 100% line/branch/function coverage on `src/`,
+  11 stateful invariants, Slither 0 findings (`SECURITY_CHECK_20Oct2026.md`).
 
 ## Post-deploy lock sequence (mainnet, Safe transactions)
 
 1. `SLT.grantRole(MINTER_ROLE, MintContract)`
-2. `MintContract.setStablecoinAccepted(USDC/USDT, true)`
-3. `IndexOracle.grantRole(ORACLE_UPDATER_ROLE, adapter)` + revoke from deployer
-4. Verify on-chain: `minterCount() == 1`, `hasRole(MINTER_ROLE, MintContract)`, `burnSourceCount() == 1`, `authorizedBurnSource(Safe) == true`
-5. `SLT.lockMinterRole(MintContract)` — one-way
-6. `SLT.lockBurnSource()` — one-way; reverts unless `burnSourceCount() == 1`
+2. (whitelist is seeded in the constructor — nothing to do; later additions take 24h)
+3. `IndexOracle` updater is set at deploy (`ORACLE_UPDATER_ADDRESS`); rotate via Safe only if the adapter key changes
+4. Verify on-chain: `minterCount() == 1`, `hasRole(MINTER_ROLE, MintContract)`, `MintContract.slt() == SLT`, `burnSourceCount() == 1`, `authorizedBurnSource(Safe) == true`, `acceptedStablecoin(USDC/USDt) == true`
+5. `SLT.lockMinterRole(MintContract)` — one-way; reverts unless the minter set is exactly `{MintContract}` and it is wired to this token
+6. `SLT.lockBurnSource(Safe)` — one-way; reverts unless the burn-source set is exactly `{Safe}`
 
 ## References
 

@@ -6,7 +6,7 @@ allowed-tools: Read, Write, Grep, Glob, Bash
 Run the pre-audit gate. Every number in the report must come from a command you ran in this session; quote the raw summary lines.
 
 Steps (stop at the first failure and report it):
-1. `forge --version`, `solc` from foundry.toml, `cat foundry.lock` (pins).
+1. `forge --version`, `solc`, `via_ir`, `optimizer_runs`, `evm_version` from `forge config --json` (quote them), `cat foundry.lock` (pins). Also quote `git rev-parse HEAD` and `git describe --tags --always` up front so the report is bound to the tree it measured.
 2. `forge fmt --check` (report, do not block).
 3. `forge build` — quote last line.
 4. `forge test` — quote the final "Ran N test suites" line and every FAIL line.

@@ -87,7 +87,7 @@ Code to:
 - [ ] Deploy script tested on Fuji end-to-end (deploy + Safe role grants + first mint).
 - [ ] External audit on tag `v1.1-audit` complete (Halborn / Zealynx / Cantina RFQ); all High/Medium findings resolved and fix commit re-reviewed.
 - [ ] WP final published; GitBook live.
-- [ ] Harneys BVI legal opinion received.
+- [x] BVI regulatory memorandum received from BVI counsel (1 Jul 2026); Terms of Use in progress.
 - [ ] US counsel memorandum received.
 - [ ] Custodian RFP complete; partner engaged.
 - [ ] Chainlink adapter live; index update cadence confirmed.

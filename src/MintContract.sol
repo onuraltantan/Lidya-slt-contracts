@@ -238,6 +238,7 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
         for (uint256 i = 0; i < initialStablecoins.length; i++) {
             address token = initialStablecoins[i];
             if (token == address(0)) revert MintContract_ZeroAddress();
+            // slither-disable-next-line calls-loop
             _requireSixDecimals(token);
             acceptedStablecoin[token] = true;
             emit StablecoinWhitelistUpdated(token, true);

@@ -2,17 +2,17 @@
 
 Smart contracts for **SLT (Synthetic Liquidity Token)** V1 — Lidya Investments quant-arbitrage performance tokenization on Avalanche C-Chain.
 
-> **Status**: v1.1-audit — contract set frozen for external audit (tag `v1.1-audit`). Not yet
+> **Status**: v1.1.1-audit — contract set frozen for external audit (tag `v1.1.1-audit`). Not yet
 > deployed to mainnet; Fuji testnet live. External audit (RFQ: Halborn / Zealynx / Cantina) is the
-> gating step before mainnet deploy. Latest gate results: `SECURITY_CHECK_15Oct2026.md`.
+> gating step before mainnet deploy. Latest gate results: `SECURITY_CHECK_20Oct2026.md`.
 
 ## Contracts
 
 | Contract           | Lines | Purpose                                                                   |
 | ------------------ | ----- | ------------------------------------------------------------------------- |
-| `IndexOracle.sol`  | 301   | Stores the synthetic performance index. Bounds-checked (±5%/update), throttled (≥20h), pausable; M-02 staleness guard. |
-| `SLT.sol`          | 355   | ERC-20 + index-based read-only metadata. Non-redeemable. Sealed minter set (`lockMinterRole`) and burn source (`lockBurnSource`). |
-| `MintContract.sol` | 322   | Accepts 6-dec USDC/USDT, mints SLT at current index, forwards stable atomically to Treasury Safe; 24h treasury-change timelock. |
+| `IndexOracle.sol`  | 318   | Stores the synthetic performance index. Bounds-checked (±5%/update), throttled (≥20h), pausable; M-02 staleness guard. |
+| `SLT.sol`          | 400   | ERC-20 + index-based read-only metadata. Non-redeemable. Sealed minter set (`lockMinterRole(expected)`) and burn source (`lockBurnSource(expected)`). |
+| `MintContract.sol` | 440   | Accepts 6-dec USDC/USDt (seeded at deploy; additions timelocked 24h), mints SLT at current index with optional `minSltOut`/`deadline`, forwards stable atomically to Treasury Safe with receipt check; 24h treasury-change timelock. |
 | Treasury Safe      | n/a   | Gnosis Safe (deployed off-chain via `safe.global`). 3-of-5 multisig.       |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full component diagram, roles matrix, and threat model.
@@ -91,16 +91,16 @@ forge script script/DeployFuji.s.sol:DeployFuji --rpc-url $FUJI_RPC_URL --broadc
 forge script script/Deploy.s.sol --rpc-url avalanche --broadcast --verify
 ```
 
-4. Post-deploy, execute these via Safe transaction (order matters; 7–8 are one-way):
+4. Post-deploy, execute these via Safe transaction (order matters; 3–4 are one-way). The stablecoin
+   whitelist and the oracle updater are set by the constructor/script (`USDC_ADDRESS`, `USDT_ADDRESS`,
+   `ORACLE_UPDATER_ADDRESS` env), so there is no instant post-deploy whitelist step.
    1. `SLT.grantRole(MINTER_ROLE, MintContract)`
-   2. `MintContract.setStablecoinAccepted(USDC, true)`
-   3. `MintContract.setStablecoinAccepted(USDT, true)`
-   4. `IndexOracle.grantRole(ORACLE_UPDATER_ROLE, ChainlinkAdapter)` then `revokeRole` from deployer
-   5. Verify on-chain: `SLT.minterCount() == 1`, `SLT.hasRole(MINTER_ROLE, MintContract)`,
-      `SLT.burnSourceCount() == 1`, `SLT.authorizedBurnSource(Safe) == true`
-   6. `SLT.lockMinterRole(MintContract)` — one-way (H-01 / L-04)
-   7. `SLT.lockBurnSource()` — one-way; refuses unless the set is exactly one address (M-01)
-   8. Treasury Safe changes later: `setTreasurySafe(new)` → wait 24h → `executeTreasurySafe()` (or `cancelTreasurySafe()`) (M-03)
+   2. Verify on-chain: `SLT.minterCount() == 1`, `SLT.hasRole(MINTER_ROLE, MintContract)`, `MintContract.slt() == SLT`,
+      `SLT.burnSourceCount() == 1`, `SLT.authorizedBurnSource(Safe) == true`, `MintContract.acceptedStablecoin(USDC/USDt) == true`
+   3. `SLT.lockMinterRole(MintContract)` — one-way (H-01 / L-04 / M-4)
+   4. `SLT.lockBurnSource(Safe)` — one-way; refuses unless the set is exactly `{Safe}` (M-01 / M-3)
+   5. Later changes, all 24h propose → execute (or cancel): Treasury Safe (`setTreasurySafe` → `executeTreasurySafe`, M-03);
+      stablecoin additions (`setStablecoinAccepted(tok,true)` → `executeStablecoinAccepted(tok)`, H-1). Delisting is immediate.
 
 ## Repo Layout
 
@@ -116,7 +116,7 @@ test/
   SLT.t.sol
   MintContract.t.sol
   IndexOracle.t.sol
-  HardeningV11.t.sol        # M-01 / M-02 / M-03 / L-04 (v1.1-audit)
+  HardeningV11.t.sol        # M-01..M-04, L-04, H-1, M-1, M-3, L-1..L-6 (v1.1 / v1.1.1)
   PreAuditPoC.t.sol         # Moment Research PoCs, now regression tests
   PreAuditPoC2.t.sol
   invariants/               # stateful fuzz: Handler.sol + SLTInvariants.t.sol
@@ -130,6 +130,7 @@ docs/
 .claude/                    # repo harness: slt-invariant-auditor agent, /doc-sync, /audit-gate
 foundry.toml
 foundry.lock                # dependency pins (OZ v5.6.1, forge-std v1.16.2)
+docs/ABI_BASELINE_v1.1.1.txt # public ABI snapshot the invariant auditor diffs against
 remappings.txt
 .env.example
 ```
@@ -138,9 +139,10 @@ remappings.txt
 
 1. **Internal review** — done (Jul–Aug 2026, `REVIEW_BRIEF.md`).
 2. **Independent pre-review** — Moment Research, Sep 2026 (H-01 fixed; M-01/M-02/M-03/L-04 fixed in v1.1-audit; M-04 accepted, see THREAT_MODEL §5).
-3. **External audit** — RFQ to Halborn / Zealynx / Cantina on tag `v1.1-audit`; one fix-verification round included.
-4. **Fix loop** — findings → PRs → re-audit of the fix commit.
-5. **Mainnet deploy** — Safe-batched, role topology verified on-chain before `lockMinterRole` / `lockBurnSource`.
+3. **Second independent review** — Oct 2026 (security + code-quality passes); H-1/M-1/M-3/M-4/L-1…L-6 closed in `v1.1.1-audit`.
+4. **External audit** — RFQ to Halborn / Zealynx / Cantina on tag `v1.1.1-audit`; one fix-verification round included.
+5. **Fix loop** — findings → PRs → re-audit of the fix commit.
+6. **Mainnet deploy** — Safe-batched, role topology verified on-chain before `lockMinterRole` / `lockBurnSource`.
 
 ## License
 
