@@ -101,7 +101,8 @@ contract PreAuditPoC2 is Test {
         oracle = new IndexOracle(1e18, safe, safe, updater);
         slt = new SLT(safe, safe, address(oracle));
         usdc = new MockToken("USD Coin", "USDC", 6);
-        mintC = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT, _arr(address(usdc)));
+        mintC =
+            new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT, _arr(address(usdc)));
         CONFIG = mintC.CONFIG_ROLE();
 
         vm.startPrank(safe);

@@ -41,8 +41,9 @@ contract HardeningV11Test is Test {
         oracle = new IndexOracle(1e18, safe, guardian, updater);
         slt = new SLT(safe, pauser, address(oracle));
         usdc = new MockStable("USD Coin", "USDC");
-        mintContract =
-            new MintContract(address(slt), address(oracle), safe, safe, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
+        mintContract = new MintContract(
+            address(slt), address(oracle), safe, safe, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc))
+        );
 
         vm.startPrank(safe);
         slt.grantRole(slt.MINTER_ROLE(), address(mintContract));
@@ -552,9 +553,7 @@ contract HardeningV11Test is Test {
         usdt.mint(alice, MIN_MINT);
         vm.startPrank(alice);
         usdt.approve(address(mintContract), MIN_MINT);
-        vm.expectRevert(
-            abi.encodeWithSelector(MintContract.MintContract_StablecoinNotAccepted.selector, address(usdt))
-        );
+        vm.expectRevert(abi.encodeWithSelector(MintContract.MintContract_StablecoinNotAccepted.selector, address(usdt)));
         mintContract.mintSLT(address(usdt), MIN_MINT);
         vm.stopPrank();
     }

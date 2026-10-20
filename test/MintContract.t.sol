@@ -94,7 +94,9 @@ contract MintContractTest is Test {
         slt = new SLT(admin, pauser, address(oracle));
         usdc = new MockUSDC();
 
-        mintContract = new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
+        mintContract = new MintContract(
+            address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc))
+        );
 
         vm.startPrank(admin);
         slt.grantRole(slt.MINTER_ROLE(), address(mintContract));
@@ -107,7 +109,9 @@ contract MintContractTest is Test {
 
     function test_Constructor_RevertOnZeroSltToken() public {
         vm.expectRevert(MintContract.MintContract_ZeroAddress.selector);
-        new MintContract(address(0), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
+        new MintContract(
+            address(0), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc))
+        );
     }
 
     function test_Constructor_RevertOnZeroOracle() public {
@@ -117,12 +121,16 @@ contract MintContractTest is Test {
 
     function test_Constructor_RevertOnZeroSafe() public {
         vm.expectRevert(MintContract.MintContract_ZeroAddress.selector);
-        new MintContract(address(slt), address(oracle), address(0), admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
+        new MintContract(
+            address(slt), address(oracle), address(0), admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc))
+        );
     }
 
     function test_Constructor_RevertOnZeroAdmin() public {
         vm.expectRevert(MintContract.MintContract_ZeroAddress.selector);
-        new MintContract(address(slt), address(oracle), treasurySafe, address(0), pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
+        new MintContract(
+            address(slt), address(oracle), treasurySafe, address(0), pauser, MIN_MINT, MAX_MINT, _arr(address(usdc))
+        );
     }
 
     function test_Constructor_RevertOnZeroMin() public {
@@ -132,7 +140,9 @@ contract MintContractTest is Test {
 
     function test_Constructor_RevertOnMinGreaterThanMax() public {
         vm.expectRevert(MintContract.MintContract_InvalidLimits.selector);
-        new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MAX_MINT + 1, MAX_MINT, _arr(address(usdc)));
+        new MintContract(
+            address(slt), address(oracle), treasurySafe, admin, pauser, MAX_MINT + 1, MAX_MINT, _arr(address(usdc))
+        );
     }
 
     function test_Constructor_GrantsCorrectRoles() public view {

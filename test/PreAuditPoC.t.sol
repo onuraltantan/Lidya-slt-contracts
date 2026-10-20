@@ -52,7 +52,8 @@ contract PreAuditPoC is Test {
         oracle = new IndexOracle(1e18, safe, safe, updater);
         slt = new SLT(safe, safe, address(oracle));
         usdc = new MockStable();
-        mintC = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT, _arr(address(usdc)));
+        mintC =
+            new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT, _arr(address(usdc)));
         MINTER = slt.MINTER_ROLE();
         LOCK = slt.MINTER_ADMIN_LOCK();
 
