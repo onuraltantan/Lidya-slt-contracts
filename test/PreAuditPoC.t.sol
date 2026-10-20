@@ -41,18 +41,24 @@ contract PreAuditPoC is Test {
     uint256 constant MIN_MINT = 1_000e6;
     uint256 constant MAX_MINT = 5_000_000e6;
 
+    function _arr(
+        address a
+    ) internal pure returns (address[] memory r) {
+        r = new address[](1);
+        r[0] = a;
+    }
+
     function setUp() public {
         oracle = new IndexOracle(1e18, safe, safe, updater);
         slt = new SLT(safe, safe, address(oracle));
-        mintC = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT);
         usdc = new MockStable();
+        mintC = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT, _arr(address(usdc)));
         MINTER = slt.MINTER_ROLE();
         LOCK = slt.MINTER_ADMIN_LOCK();
 
         // Canonical deployment wiring, exactly as documented (README step 4 / runbook).
         vm.startPrank(safe);
         slt.grantRole(MINTER, address(mintC));
-        mintC.setStablecoinAccepted(address(usdc), true);
         vm.stopPrank();
 
         usdc.mint(alice, 10_000e6);

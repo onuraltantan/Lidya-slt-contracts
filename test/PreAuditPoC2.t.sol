@@ -6,6 +6,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {SLT} from "../src/SLT.sol";
 import {IndexOracle} from "../src/IndexOracle.sol";
 import {MintContract} from "../src/MintContract.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @dev A configurable-decimals mock "stablecoin".
 contract MockToken is ERC20 {
@@ -63,6 +64,9 @@ contract ReentrantToken is ERC20 {
     ) public override returns (bool) {
         if (armed && !entered) {
             entered = true;
+            // Fund + approve ourselves so the nested call would succeed if nonReentrant were missing.
+            _mint(address(this), amt);
+            _approve(address(this), address(mintC), amt);
             mintC.mintSLT(address(this), amt); // second entry — must be blocked
         }
         return super.transferFrom(from, to, amt);
@@ -86,16 +90,22 @@ contract PreAuditPoC2 is Test {
     uint256 constant MIN_MINT = 1_000e6; // $1,000 in 6-dec
     uint256 constant MAX_MINT = 5_000_000e6; // $5,000,000 in 6-dec
 
+    function _arr(
+        address a
+    ) internal pure returns (address[] memory r) {
+        r = new address[](1);
+        r[0] = a;
+    }
+
     function setUp() public {
         oracle = new IndexOracle(1e18, safe, safe, updater);
         slt = new SLT(safe, safe, address(oracle));
-        mintC = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT);
         usdc = new MockToken("USD Coin", "USDC", 6);
+        mintC = new MintContract(address(slt), address(oracle), safe, safe, safe, MIN_MINT, MAX_MINT, _arr(address(usdc)));
         CONFIG = mintC.CONFIG_ROLE();
 
         vm.startPrank(safe);
         slt.grantRole(slt.MINTER_ROLE(), address(mintC));
-        mintC.setStablecoinAccepted(address(usdc), true);
         vm.stopPrank();
 
         usdc.mint(alice, 100_000e6);
@@ -118,11 +128,15 @@ contract PreAuditPoC2 is Test {
         mintC.setStablecoinAccepted(address(dai), true);
         assertFalse(mintC.acceptedStablecoin(address(dai)), "18-dec token rejected from whitelist");
 
-        // The correct 6-decimal token is still accepted.
+        // The correct 6-decimal token can be proposed, and is accepted after the 24h delay (H-1).
         MockToken good = new MockToken("USDT.e", "USDT", 6);
         vm.prank(safe);
         mintC.setStablecoinAccepted(address(good), true);
-        assertTrue(mintC.acceptedStablecoin(address(good)), "6-dec token still accepted");
+        assertFalse(mintC.acceptedStablecoin(address(good)), "not accepted before the delay");
+        vm.warp(block.timestamp + mintC.STABLECOIN_DELAY());
+        vm.prank(safe);
+        mintC.executeStablecoinAccepted(address(good));
+        assertTrue(mintC.acceptedStablecoin(address(good)), "6-dec token accepted after delay");
     }
 
     // ==================================================================
@@ -138,7 +152,7 @@ contract PreAuditPoC2 is Test {
         // REGRESSION: MintContract now rejects it too, so a fat-fingered deploy can't ship an
         // unpausable mint contract.
         vm.expectRevert(MintContract.MintContract_ZeroAddress.selector);
-        new MintContract(address(slt), address(oracle), safe, safe, address(0), MIN_MINT, MAX_MINT);
+        new MintContract(address(slt), address(oracle), safe, safe, address(0), MIN_MINT, MAX_MINT, _arr(address(usdc)));
     }
 
     // ==================================================================
@@ -147,19 +161,22 @@ contract PreAuditPoC2 is Test {
     // hard code guarantee" claim is really "±5% plus rounding slack."
     // ==================================================================
     function test_PoC_BoundCheckLetsThroughSlightlyOverFivePercent() public {
+        // v1.1.1 (L-1 fix): the check no longer floors to bps, so 5.0099% is REJECTED and exactly
+        // 5.0000% is the last accepted value.
         vm.warp(block.timestamp + 21 hours);
         uint256 prev = 1e18;
         uint256 delta = 50_099_000_000_000_000; // 5.0099%
         uint256 newIndex = prev + delta;
-
-        // Contract's own check: (delta * 10000) / prev == 500, so it passes.
-        assertEq((delta * 10_000) / prev, 500, "rounds to exactly the 500-bps ceiling");
-        // True change is strictly greater than 5%.
+        assertEq((delta * 10_000) / prev, 500, "would have rounded to exactly the 500-bps ceiling");
         assertGt(delta * 10_000, 500 * prev, "actual move exceeds 5%");
 
         vm.prank(updater);
-        oracle.updateIndex(newIndex); // accepted
-        assertEq(oracle.pricePerShare(), newIndex, "5.0099% update accepted");
+        vm.expectRevert(abi.encodeWithSelector(IndexOracle.IndexOracle_OutOfBounds.selector, newIndex, prev, 500));
+        oracle.updateIndex(newIndex);
+
+        vm.prank(updater);
+        oracle.updateIndex(prev + prev * 500 / 10_000); // exactly +5.00%
+        assertEq(oracle.pricePerShare(), 1.05e18, "exact 5% accepted");
     }
 
     // ==================================================================
@@ -169,18 +186,24 @@ contract PreAuditPoC2 is Test {
     // ==================================================================
     function test_PoC_ReentrancyIsBlocked() public {
         ReentrantToken evil = new ReentrantToken();
-        vm.prank(safe);
+        vm.startPrank(safe);
         mintC.setStablecoinAccepted(address(evil), true);
+        vm.warp(block.timestamp + mintC.STABLECOIN_DELAY());
+        mintC.executeStablecoinAccepted(address(evil));
+        vm.stopPrank();
 
         evil.mint(alice, 10_000e6);
         evil.arm(mintC);
 
         vm.startPrank(alice);
         evil.approve(address(mintC), 10_000e6);
-        vm.expectRevert(); // ReentrancyGuardReentrantCall propagates out of transferFrom
+        // The nested call is funded and approved (see ReentrantToken.transferFrom), so ONLY the guard
+        // can stop it: the exact ReentrancyGuardReentrantCall selector must surface.
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
         mintC.mintSLT(address(evil), 1_000e6);
         vm.stopPrank();
         assertEq(slt.balanceOf(alice), 0, "no SLT minted; guard held");
+        assertEq(slt.totalSupply(), 0, "nothing minted anywhere");
     }
 
     // ==================================================================
@@ -205,8 +228,20 @@ contract PreAuditPoC2 is Test {
         vm.stopPrank();
 
         console2.log("expected:", expectedAtQuote, " got:", got);
-        assertLt(got, expectedAtQuote, "user received fewer SLT than quoted");
+        assertLt(got, expectedAtQuote, "user received fewer SLT than quoted (2-arg legacy path)");
         assertApproxEqAbs(got, 952_380952380952380952, 1e12, "~952 SLT, ~4.76% short");
+
+        // v1.1.1 (M-1 fix): the 4-arg overload lets the user set a floor; the same sandwich reverts.
+        usdc.mint(alice, 1_000e6);
+        vm.startPrank(alice);
+        usdc.approve(address(mintC), 1_000e6);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                MintContract.MintContract_SlippageExceeded.selector, 952_380952380952380952, expectedAtQuote
+            )
+        );
+        mintC.mintSLT(address(usdc), 1_000e6, expectedAtQuote, block.timestamp + 1 hours);
+        vm.stopPrank();
     }
 
     // ==================================================================

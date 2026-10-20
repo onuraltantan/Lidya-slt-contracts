@@ -54,13 +54,23 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     address public treasurySafe;
 
     /// @notice Whitelist of accepted stablecoin token addresses.
-    /// @dev    Toggled via setStablecoinAccepted() (CONFIG_ROLE).
+    /// @dev    Seeded in the constructor. Later ADDITIONS go through a 24h propose/execute flow
+    ///         (setStablecoinAccepted(token, true) -> executeStablecoinAccepted(token)); removals are
+    ///         immediate (finding H-1: an instant whitelist let a compromised admin mint SLT against a
+    ///         worthless 6-decimal token).
     mapping(address => bool) public acceptedStablecoin;
 
-    /// @notice Minimum mint amount in stablecoin units (6 decimals). Default $1,000.
+    /// @notice Earliest timestamp at which a proposed stablecoin may be whitelisted; 0 = nothing pending.
+    mapping(address => uint256) public pendingStablecoinExecutableAt;
+
+    /// @notice Delay between proposing and executing a stablecoin whitelist ADDITION (finding H-1).
+    uint256 public constant STABLECOIN_DELAY = 24 hours;
+
+    /// @notice Minimum mint amount in stablecoin units (6 decimals); set at deploy (mainnet: $1,000).
     uint256 public minMintAmount;
 
-    /// @notice Maximum mint amount per single transaction in stablecoin units. Default $5,000,000.
+    /// @notice Maximum mint amount per single transaction in stablecoin units; set at deploy (mainnet: $5,000,000).
+    /// @dev    Per-transaction only. There is deliberately no per-address or per-period cap (see THREAT_MODEL).
     uint256 public maxMintAmount;
 
     /// @notice Decimal count every whitelisted stablecoin must report.
@@ -98,6 +108,12 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice Emitted when a stablecoin is added to or removed from the whitelist.
     event StablecoinWhitelistUpdated(address indexed token, bool accepted);
+
+    /// @notice Emitted when a stablecoin whitelist addition is proposed (H-1 timelock start).
+    event StablecoinProposed(address indexed token, uint256 executableAt);
+
+    /// @notice Emitted when a pending stablecoin proposal is cancelled (explicitly or by delisting).
+    event StablecoinProposalCancelled(address indexed token);
 
     /// @notice Emitted when the Treasury Safe address actually changes (constructor or executeTreasurySafe).
     event TreasurySafeUpdated(address indexed previous, address indexed updated);
@@ -144,6 +160,30 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     /// @notice Reverts when executeTreasurySafe() is called before TREASURY_SAFE_DELAY has elapsed.
     error MintContract_TreasurySafeDelayNotElapsed();
 
+    /// @notice Reverts when a proposed Treasury Safe is this contract, the SLT token or the current safe.
+    /// @param proposed The rejected address.
+    error MintContract_InvalidTreasurySafe(address proposed);
+
+    /// @notice Reverts when executeStablecoinAccepted()/cancelStablecoinProposal() finds no pending proposal.
+    /// @param token The token with no pending proposal.
+    error MintContract_NoPendingStablecoin(address token);
+
+    /// @notice Reverts when executeStablecoinAccepted() is called before STABLECOIN_DELAY has elapsed.
+    /// @param token The token whose delay has not elapsed.
+    error MintContract_StablecoinDelayNotElapsed(address token);
+
+    /// @notice Reverts when the Treasury Safe received less than `stableAmount` (fee-on-transfer or
+    ///         non-standard token behaviour, finding L-6).
+    /// @param expected The amount requested. @param received The amount that actually arrived.
+    error MintContract_TransferShortfall(uint256 expected, uint256 received);
+
+    /// @notice Reverts when the SLT that would be minted is below the caller's minSltOut.
+    /// @param minted The amount that would be minted. @param minSltOut The caller's floor.
+    error MintContract_SlippageExceeded(uint256 minted, uint256 minSltOut);
+
+    /// @notice Reverts when block.timestamp is past the caller's deadline.
+    error MintContract_DeadlineExpired();
+
     // -----------------------------------------------------------------------
     // Constructor
     // -----------------------------------------------------------------------
@@ -156,8 +196,11 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     /// @param pauser         Address granted PAUSER_ROLE (Treasury Safe).
     /// @param _minMintAmount Initial minimum mint amount (6-decimal stable units).
     /// @param _maxMintAmount Initial maximum mint amount (6-decimal stable units).
-    /// @dev    Reverts with MintContract_ZeroAddress for any zero address (sltToken/oracle/safe/admin)
-    ///         or MintContract_InvalidLimits if _minMintAmount == 0 or _minMintAmount > _maxMintAmount.
+    /// @param initialStablecoins Stablecoins whitelisted at deploy (USDC, USDT). Each must report 6
+    ///        decimals. Later additions require the 24h propose/execute flow (H-1).
+    /// @dev    Reverts with MintContract_ZeroAddress for any zero address (sltToken/oracle/safe/admin/
+    ///         pauser/any stablecoin), MintContract_InvalidLimits if _minMintAmount == 0 or
+    ///         _minMintAmount > _maxMintAmount, or MintContract_UnexpectedDecimals for a non-6-dec token.
     constructor(
         address sltToken,
         address oracle,
@@ -165,7 +208,8 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
         address admin,
         address pauser,
         uint256 _minMintAmount,
-        uint256 _maxMintAmount
+        uint256 _maxMintAmount,
+        address[] memory initialStablecoins
     ) {
         if (
             sltToken == address(0) || oracle == address(0) || safe == address(0) || admin == address(0)
@@ -190,26 +234,66 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
 
         emit TreasurySafeUpdated(address(0), safe);
         emit MintLimitsUpdated(_minMintAmount, _maxMintAmount);
+
+        for (uint256 i = 0; i < initialStablecoins.length; i++) {
+            address token = initialStablecoins[i];
+            if (token == address(0)) revert MintContract_ZeroAddress();
+            _requireSixDecimals(token);
+            acceptedStablecoin[token] = true;
+            emit StablecoinWhitelistUpdated(token, true);
+        }
     }
 
     // -----------------------------------------------------------------------
     // Mint
     // -----------------------------------------------------------------------
 
-    /// @notice Mint SLT by depositing an approved stablecoin.
-    /// @param stablecoin   The stablecoin to deposit (must be whitelisted via setStablecoinAccepted).
+    /// @notice Mint SLT by depositing an approved stablecoin (no slippage protection).
+    /// @param stablecoin   The stablecoin to deposit (must be whitelisted).
     /// @param stableAmount The amount of stablecoin to deposit (6-decimal units).
     /// @return sltMinted   The amount of SLT minted to msg.sender (18-decimal units).
-    /// @dev    Reverts with MintContract_StablecoinNotAccepted if stablecoin is not whitelisted,
-    ///         MintContract_AmountOutOfBounds if stableAmount is outside [min, max],
-    ///         MintContract_OracleStale if the oracle isFresh() returns false, or any underlying
-    ///         SafeERC20/SLT.mint error. Protected by nonReentrant. Subject to Pausable.
-    ///         The stablecoin is pulled from msg.sender directly to the Treasury Safe in a single
-    ///         safeTransferFrom call (no intermediate balance held by this contract).
+    /// @dev    Kept for interface stability (v1.0 signature). Equivalent to
+    ///         mintSLT(stablecoin, stableAmount, 0, type(uint256).max). Front-ends SHOULD use the
+    ///         4-argument overload so an oracle update landing before the tx cannot change the
+    ///         received amount beyond the caller's tolerance.
     function mintSLT(
         address stablecoin,
         uint256 stableAmount
     ) external nonReentrant whenNotPaused returns (uint256 sltMinted) {
+        return _mintSLT(stablecoin, stableAmount, 0, type(uint256).max);
+    }
+
+    /// @notice Mint SLT by depositing an approved stablecoin, with slippage and deadline protection.
+    /// @param stablecoin   The stablecoin to deposit (must be whitelisted).
+    /// @param stableAmount The amount of stablecoin to deposit (6-decimal units).
+    /// @param minSltOut    Minimum SLT the caller accepts (18-decimal units); reverts below this.
+    /// @param deadline     Latest block.timestamp at which the tx may execute.
+    /// @return sltMinted   The amount of SLT minted to msg.sender (18-decimal units).
+    /// @dev    Reverts with MintContract_StablecoinNotAccepted, MintContract_AmountOutOfBounds,
+    ///         MintContract_OracleStale, MintContract_SlippageExceeded, MintContract_DeadlineExpired,
+    ///         MintContract_TransferShortfall (Treasury Safe received less than stableAmount), or any
+    ///         underlying SafeERC20/SLT.mint error. Protected by nonReentrant. Subject to Pausable.
+    ///         The stablecoin is pulled from msg.sender directly to the Treasury Safe in a single
+    ///         safeTransferFrom call (no intermediate balance held by this contract).
+    function mintSLT(
+        address stablecoin,
+        uint256 stableAmount,
+        uint256 minSltOut,
+        uint256 deadline
+    ) external nonReentrant whenNotPaused returns (uint256 sltMinted) {
+        return _mintSLT(stablecoin, stableAmount, minSltOut, deadline);
+    }
+
+    /// @dev Shared mint path. Checks → external pull → mint → event (CEI; no state of this contract
+    ///      is written, so there is nothing to reorder).
+    function _mintSLT(
+        address stablecoin,
+        uint256 stableAmount,
+        uint256 minSltOut,
+        uint256 deadline
+    ) internal returns (uint256 sltMinted) {
+        // slither-disable-next-line timestamp
+        if (block.timestamp > deadline) revert MintContract_DeadlineExpired();
         if (!acceptedStablecoin[stablecoin]) revert MintContract_StablecoinNotAccepted(stablecoin);
         if (stableAmount < minMintAmount || stableAmount > maxMintAmount) {
             revert MintContract_AmountOutOfBounds(stableAmount, minMintAmount, maxMintAmount);
@@ -218,9 +302,15 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
 
         uint256 indexUsed = indexOracle.pricePerShare();
         sltMinted = indexOracle.stableToSLT(stableAmount);
+        if (sltMinted < minSltOut) revert MintContract_SlippageExceeded(sltMinted, minSltOut);
 
-        // Pull stablecoin from depositor directly to the Treasury Safe (atomic forward).
-        IERC20(stablecoin).safeTransferFrom(msg.sender, treasurySafe, stableAmount);
+        // Pull stablecoin from depositor directly to the Treasury Safe (atomic forward) and verify the
+        // Safe actually received the full amount (fee-on-transfer / non-standard token guard, L-6).
+        address safe = treasurySafe;
+        uint256 balanceBefore = IERC20(stablecoin).balanceOf(safe);
+        IERC20(stablecoin).safeTransferFrom(msg.sender, safe, stableAmount);
+        uint256 received = IERC20(stablecoin).balanceOf(safe) - balanceBefore;
+        if (received != stableAmount) revert MintContract_TransferShortfall(stableAmount, received);
 
         // Mint SLT after stablecoin transfer succeeds.
         slt.mint(msg.sender, sltMinted);
@@ -232,27 +322,73 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
     // Configuration (CONFIG_ROLE / DEFAULT_ADMIN_ROLE)
     // -----------------------------------------------------------------------
 
-    /// @notice Add or remove a stablecoin from the mint whitelist.
+    /// @notice Propose adding a stablecoin to the whitelist (accepted = true), or remove one immediately
+    ///         (accepted = false).
     /// @param token    The stablecoin token address.
-    /// @param accepted True to whitelist, false to delist.
-    /// @dev    Restricted to CONFIG_ROLE. Reverts with MintContract_ZeroAddress if token is zero.
-    ///         Emits StablecoinWhitelistUpdated.
+    /// @param accepted True to PROPOSE whitelisting (effective after executeStablecoinAccepted() once
+    ///                 STABLECOIN_DELAY has elapsed), false to delist immediately.
+    /// @dev    Restricted to CONFIG_ROLE. Signature kept from v1.0; semantics for `true` are now
+    ///         propose-only (finding H-1). Delisting also cancels any pending proposal for the token.
+    ///         Reverts with MintContract_ZeroAddress if token is zero, or MintContract_UnexpectedDecimals
+    ///         if a proposed token does not report 6 decimals. Re-proposing restarts the clock.
     function setStablecoinAccepted(
         address token,
         bool accepted
     ) external onlyRole(CONFIG_ROLE) {
         if (token == address(0)) revert MintContract_ZeroAddress();
-        // When whitelisting, enforce the 6-decimal assumption the conversion math depends on.
-        // (Delisting is never blocked, so a mistakenly-listed token can always be removed.)
         if (accepted) {
-            try IERC20Metadata(token).decimals() returns (uint8 dec) {
-                if (dec != EXPECTED_STABLE_DECIMALS) revert MintContract_UnexpectedDecimals(token, dec);
-            } catch {
-                revert MintContract_UnexpectedDecimals(token, 0);
+            _requireSixDecimals(token);
+            uint256 executableAt = block.timestamp + STABLECOIN_DELAY;
+            pendingStablecoinExecutableAt[token] = executableAt;
+            emit StablecoinProposed(token, executableAt);
+        } else {
+            // Delisting is never delayed or blocked, so a mistakenly-listed token can always be removed.
+            if (pendingStablecoinExecutableAt[token] != 0) {
+                pendingStablecoinExecutableAt[token] = 0;
+                emit StablecoinProposalCancelled(token);
             }
+            acceptedStablecoin[token] = false;
+            emit StablecoinWhitelistUpdated(token, false);
         }
-        acceptedStablecoin[token] = accepted;
-        emit StablecoinWhitelistUpdated(token, accepted);
+    }
+
+    /// @notice Whitelist a stablecoin whose proposal delay has elapsed.
+    /// @param token The proposed stablecoin.
+    /// @dev    Restricted to CONFIG_ROLE. Re-checks decimals at execution (tokens are upgradeable).
+    ///         Reverts with MintContract_NoPendingStablecoin or MintContract_StablecoinDelayNotElapsed.
+    function executeStablecoinAccepted(
+        address token
+    ) external onlyRole(CONFIG_ROLE) {
+        uint256 executableAt = pendingStablecoinExecutableAt[token];
+        if (executableAt == 0) revert MintContract_NoPendingStablecoin(token);
+        // slither-disable-next-line timestamp
+        if (block.timestamp < executableAt) revert MintContract_StablecoinDelayNotElapsed(token);
+        _requireSixDecimals(token);
+        pendingStablecoinExecutableAt[token] = 0;
+        acceptedStablecoin[token] = true;
+        emit StablecoinWhitelistUpdated(token, true);
+    }
+
+    /// @notice Cancel a pending stablecoin whitelist proposal.
+    /// @param token The proposed stablecoin.
+    /// @dev    Restricted to CONFIG_ROLE. Reverts with MintContract_NoPendingStablecoin if none pending.
+    function cancelStablecoinProposal(
+        address token
+    ) external onlyRole(CONFIG_ROLE) {
+        if (pendingStablecoinExecutableAt[token] == 0) revert MintContract_NoPendingStablecoin(token);
+        pendingStablecoinExecutableAt[token] = 0;
+        emit StablecoinProposalCancelled(token);
+    }
+
+    /// @dev Enforce the 6-decimal assumption the conversion math (SLT_TO_STABLE_SCALE = 1e12) depends on.
+    function _requireSixDecimals(
+        address token
+    ) internal view {
+        try IERC20Metadata(token).decimals() returns (uint8 dec) {
+            if (dec != EXPECTED_STABLE_DECIMALS) revert MintContract_UnexpectedDecimals(token, dec);
+        } catch {
+            revert MintContract_UnexpectedDecimals(token, 0);
+        }
     }
 
     /// @notice Propose a new Treasury Safe. Takes effect only after executeTreasurySafe() is called
@@ -265,6 +401,10 @@ contract MintContract is AccessControl, Pausable, ReentrancyGuard {
         address newSafe
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newSafe == address(0)) revert MintContract_ZeroAddress();
+        // A safe that is this contract, the token, or the current safe would brick or no-op mints (L-5).
+        if (newSafe == address(this) || newSafe == address(slt) || newSafe == treasurySafe) {
+            revert MintContract_InvalidTreasurySafe(newSafe);
+        }
         uint256 executableAt = block.timestamp + TREASURY_SAFE_DELAY;
         pendingTreasurySafe = newSafe;
         pendingTreasurySafeExecutableAt = executableAt;

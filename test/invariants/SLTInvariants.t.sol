@@ -36,16 +36,18 @@ contract SLTInvariantsTest is StdInvariant, Test {
         usdc = new MockStable("USD Coin", "USDC");
         usdt = new MockStable("Tether USD", "USDT");
 
-        mintContract = new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT);
+        address[] memory stables = new address[](2);
+        stables[0] = address(usdc);
+        stables[1] = address(usdt);
+        mintContract =
+            new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT, stables);
 
-        // Wire up roles and whitelists.
+        // Wire up roles (whitelist is seeded by the constructor, H-1).
         vm.startPrank(admin);
         slt.grantRole(slt.MINTER_ROLE(), address(mintContract));
-        mintContract.setStablecoinAccepted(address(usdc), true);
-        mintContract.setStablecoinAccepted(address(usdt), true);
         // v1.1-audit production lock sequence (mirrors Deploy script):
-        slt.lockMinterRole(address(mintContract)); // L-04 / H-01
-        slt.lockBurnSource(); // M-01
+        slt.lockMinterRole(address(mintContract)); // L-04 / H-01 / M-4
+        slt.lockBurnSource(admin); // M-01 / M-3
         vm.stopPrank();
 
         // Deploy the handler.
@@ -54,7 +56,7 @@ contract SLTInvariantsTest is StdInvariant, Test {
         // Tell Foundry to fuzz only the handler's functions (not SLT/oracle/mint directly).
         targetContract(address(handler));
 
-        bytes4[] memory selectors = new bytes4[](10);
+        bytes4[] memory selectors = new bytes4[](12);
         selectors[0] = handler.mintWithUSDC.selector;
         selectors[1] = handler.mintWithUSDT.selector;
         selectors[2] = handler.updateOracleIndex.selector;
@@ -65,6 +67,8 @@ contract SLTInvariantsTest is StdInvariant, Test {
         selectors[7] = handler.adminBurnAttempt.selector;
         selectors[8] = handler.widenBurnSourceAttempt.selector;
         selectors[9] = handler.grantMinterAttempt.selector;
+        selectors[10] = handler.revokeMinterAttempt.selector;
+        selectors[11] = handler.warpOnly.selector;
         targetSelector(StdInvariant.FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -96,13 +100,13 @@ contract SLTInvariantsTest is StdInvariant, Test {
     }
 
     // ----------------------------------------------------------------------
-    // INV-3: SLT.totalAssets() == totalSupply * pricePerShare / 1e18.
+    // INV-3: SLT.syntheticTotalValue() == totalSupply * pricePerShare / 1e18.
     //        Math consistency between view metadata and underlying state.
     // ----------------------------------------------------------------------
 
     function invariant_TotalAssetsMathConsistent() public view {
         uint256 expected = (slt.totalSupply() * oracle.pricePerShare()) / 1e18;
-        assertEq(slt.syntheticTotalValue(), expected, "totalAssets math mismatch");
+        assertEq(slt.syntheticTotalValue(), expected, "syntheticTotalValue math mismatch");
     }
 
     // ----------------------------------------------------------------------
@@ -171,10 +175,13 @@ contract SLTInvariantsTest is StdInvariant, Test {
     //        invariant runs are visible in -vvv output. Does not assert.
     // ----------------------------------------------------------------------
 
-    function invariant_callSummary() public view {
-        // No assertion — just emits state visible in trace output.
-        // Foundry will print this as part of invariant suite output.
-        assertTrue(true);
-        // (Counters: ghost_mintCallCount, ghost_indexUpdateCount, totalSupply, etc.)
+    // ----------------------------------------------------------------------
+    // INV-10 (pricing): every mint paid exactly stable * 1e12 * 1e18 / index at the index in force.
+    //        Computed independently in the handler (not via stableToSLT), so a pricing bug in the
+    //        oracle or MintContract cannot cancel out.
+    // ----------------------------------------------------------------------
+
+    function invariant_SupplyMatchesIndependentPricing() public view {
+        assertEq(slt.totalSupply(), handler.ghost_expectedSLTByPricing(), "supply != independently priced total");
     }
 }

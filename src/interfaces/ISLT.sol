@@ -10,7 +10,8 @@ interface ISLT {
         uint256 amount
     ) external;
 
-    /// @notice Burns SLT from a holder. Restricted to BURNER_ROLE.
+    /// @notice Burns SLT from an authorized burn source (Treasury Safe). Restricted to BURNER_ROLE.
+    ///         Holder balances cannot be burned: `from` must be in `authorizedBurnSource`.
     /// @dev Used only for treasury reconciliation and erroneous-mint correction. Never user-callable.
     function adminBurn(
         address from,

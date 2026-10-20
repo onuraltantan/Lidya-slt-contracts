@@ -6,6 +6,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IIndexOracle} from "./interfaces/IIndexOracle.sol";
 import {ISLT} from "./interfaces/ISLT.sol";
+import {IMintContractView} from "./interfaces/IMintContractView.sol";
 
 /// @title SLT — Synthetic Liquidity Token
 /// @author Blockxell
@@ -26,24 +27,29 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     /// @notice Role allowed to perform restricted administrative burns
-    ///         (treasury reconciliation, erroneous-mint correction). Granted to Treasury Safe only.
+    ///         (treasury reconciliation, erroneous-mint correction). Intended holder: Treasury Safe.
+    ///         Grants are not restricted by code; the burn-source seal (lockBurnSource) is what makes
+    ///         any BURNER_ROLE holder harmless to SLT holders.
     /// @dev    Burns do NOT pay out anything to the holder. They are a state-correction tool only.
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
 
-    /// @notice Role allowed to pause/unpause transfers, mints, and burns in emergencies.
+    /// @notice Role allowed to pause/unpause holder transfers and mint() in emergencies.
+    /// @dev    Burns are never paused (reconciliation must work while paused). This is a global
+    ///         emergency brake, not an address-level restriction: no allowlist, denylist, freeze or
+    ///         forced transfer exists at the token level.
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     /// @notice Sentinel role used to permanently lock MINTER_ROLE administration.
-    /// @dev    Never granted to any address, and set as its own role-admin when
-    ///         lockMinterRole() is called. Once it becomes MINTER_ROLE's admin, no address
-    ///         can ever grant or revoke MINTER_ROLE again (members may still renounce).
+    /// @dev    Never granted to any address; made its own role-admin in the constructor (H-01), so
+    ///         it can never be granted. lockMinterRole() makes it MINTER_ROLE's admin, after which no
+    ///         address can ever grant or revoke MINTER_ROLE again (members may still renounce).
     bytes32 public constant MINTER_ADMIN_LOCK = keccak256("MINTER_ADMIN_LOCK");
 
     // -----------------------------------------------------------------------
     // Immutables / constants
     // -----------------------------------------------------------------------
 
-    /// @notice Index oracle contract used for ERC-4626-style metadata.
+    /// @notice Index oracle contract used for index-based read-only metadata.
     /// @dev    Set at deployment, immutable thereafter.
     IIndexOracle public immutable indexOracle;
 
@@ -124,6 +130,15 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     /// @notice Reverts when lockBurnSource() is called while the burn-source set is not exactly one address.
     /// @param count Current number of authorized burn sources.
     error SLT_BurnSourceCountNotOne(uint256 count);
+
+    /// @notice Reverts when lockBurnSource(expectedSource) finds `expected` is not an authorized burn source.
+    /// @param expected The address the caller expected to be the sole burn source.
+    error SLT_UnexpectedBurnSource(address expected);
+
+    /// @notice Reverts when lockMinterRole(expectedMinter) is given an address that is not a MintContract
+    ///         wired to this token (no code, or `slt()` does not return this contract).
+    /// @param expected The rejected address.
+    error SLT_MinterNotWiredToThisToken(address expected);
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -218,15 +233,20 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     }
 
     /// @notice Permanently seal the authorized burn-source set. One-way; callable once.
-    /// @dev    Refuses unless the set is exactly ONE address (`burnSourceCount == 1`) — by the intended
-    ///         deployment flow that address is the Treasury Safe, which is the only entry since the
-    ///         constructor. After this call setBurnSource() always reverts, so adminBurn can only ever
-    ///         burn from that single address.
-    ///         No role — including DEFAULT_ADMIN_ROLE or a freshly granted BURNER_ROLE — can widen
-    ///         the set afterwards. This is the code-level guarantee behind "holder balances are
-    ///         untouchable" (finding M-01).
-    function lockBurnSource() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    /// @param expectedSource The address that must be the ONE AND ONLY authorized burn source
+    ///        (the Treasury Safe). Mirrors lockMinterRole(expectedMinter): the lock refuses to seal any
+    ///        other set, so a pre-lock setBurnSource() mistake cannot be frozen in.
+    /// @dev    Refuses unless `authorizedBurnSource[expectedSource]` and `burnSourceCount == 1`.
+    ///         After this call setBurnSource() always reverts, so adminBurn can only ever burn from
+    ///         that single address. No role — including DEFAULT_ADMIN_ROLE or a freshly granted
+    ///         BURNER_ROLE — can widen the set afterwards. This is the code-level guarantee behind
+    ///         "holder balances are untouchable" (finding M-01).
+    function lockBurnSource(
+        address expectedSource
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (burnSourceLocked) revert SLT_BurnSourceAlreadyLocked();
+        if (expectedSource == address(0)) revert SLT_ZeroAddress();
+        if (!authorizedBurnSource[expectedSource]) revert SLT_UnexpectedBurnSource(expectedSource);
         if (burnSourceCount != 1) revert SLT_BurnSourceCountNotOne(burnSourceCount);
         burnSourceLocked = true;
         emit BurnSourceLocked(msg.sender);
@@ -235,7 +255,9 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
     /// @notice Permanently lock MINTER_ROLE administration. One-way; callable once.
     /// @param expectedMinter The address that must be the ONE AND ONLY MINTER_ROLE holder
     ///        (the MintContract). The lock refuses to seal any other minter set (finding L-04),
-    ///        so a mis-wired deployment cannot be frozen into place.
+    ///        so a mis-wired deployment cannot be frozen into place. It must also be a deployed
+    ///        contract whose `slt()` returns this token — an EOA or a MintContract for another
+    ///        token can never be sealed in.
     /// @dev    Intended deployment sequence: (1) deploy SLT, (2) grant MINTER_ROLE to
     ///         MintContract, (3) call lockMinterRole(mintContract). After locking, MINTER_ROLE's role-admin
     ///         is MINTER_ADMIN_LOCK — a sentinel role that is its own admin and is never granted —
@@ -250,9 +272,17 @@ contract SLT is ERC20, AccessControl, Pausable, ISLT {
         if (expectedMinter == address(0)) revert SLT_ZeroAddress();
         if (!hasRole(MINTER_ROLE, expectedMinter)) revert SLT_UnexpectedMinter(expectedMinter);
         if (minterCount != 1) revert SLT_MinterCountNotOne(minterCount);
+        if (expectedMinter.code.length == 0) revert SLT_MinterNotWiredToThisToken(expectedMinter);
+        // The minter must be a MintContract that mints INTO this token. A wrong-token MintContract
+        // (or any contract without slt()) must not be sealed in forever.
+        try IMintContractView(expectedMinter).slt() returns (address wired) {
+            if (wired != address(this)) revert SLT_MinterNotWiredToThisToken(expectedMinter);
+        } catch {
+            revert SLT_MinterNotWiredToThisToken(expectedMinter);
+        }
         minterRoleLocked = true;
+        // MINTER_ADMIN_LOCK is already its own admin (constructor, H-01); only MINTER_ROLE moves here.
         _setRoleAdmin(MINTER_ROLE, MINTER_ADMIN_LOCK);
-        _setRoleAdmin(MINTER_ADMIN_LOCK, MINTER_ADMIN_LOCK);
         emit MinterRoleLocked(msg.sender);
     }
 

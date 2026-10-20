@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {SLT} from "../../src/SLT.sol";
 import {IndexOracle} from "../../src/IndexOracle.sol";
 import {MintContract} from "../../src/MintContract.sol";
@@ -58,6 +59,8 @@ contract Handler is Test {
     /// @dev SLT minted to each actor. Actors never transfer in this handler, so balanceOf(actor)
     ///      must equal this at all times — any divergence means an issuer-side burn touched a holder.
     mapping(address => uint256) public ghost_mintedTo;
+    /// @dev Independently computed SLT (stable * 1e12 * 1e18 / index) summed over all mints.
+    uint256 public ghost_expectedSLTByPricing;
 
     constructor(
         SLT _slt,
@@ -114,10 +117,12 @@ contract Handler is Test {
 
         usdc.mint(currentActor, stableAmount);
 
+        uint256 indexNow = oracle.pricePerShare();
         vm.startPrank(currentActor);
         usdc.approve(address(mintContract), stableAmount);
         uint256 minted = mintContract.mintSLT(address(usdc), stableAmount);
         vm.stopPrank();
+        ghost_expectedSLTByPricing += (stableAmount * 1e12 * 1e18) / indexNow;
 
         ghost_totalUSDCDeposited += stableAmount;
         ghost_totalSLTMinted += minted;
@@ -136,10 +141,12 @@ contract Handler is Test {
 
         usdt.mint(currentActor, stableAmount);
 
+        uint256 indexNow = oracle.pricePerShare();
         vm.startPrank(currentActor);
         usdt.approve(address(mintContract), stableAmount);
         uint256 minted = mintContract.mintSLT(address(usdt), stableAmount);
         vm.stopPrank();
+        ghost_expectedSLTByPricing += (stableAmount * 1e12 * 1e18) / indexNow;
 
         ghost_totalUSDTDeposited += stableAmount;
         ghost_totalSLTMinted += minted;
@@ -164,7 +171,9 @@ contract Handler is Test {
         vm.prank(admin);
         try slt.adminBurn(victim, amount) {
             revert("INV-8 violated: issuer burned a holder balance");
-        } catch {}
+        } catch (bytes memory r) {
+            _expectSelector(r, SLT.SLT_BurnSourceNotAuthorized.selector);
+        }
     }
 
     /// @notice Admin tries to widen the burn-source set (grant BURNER to a new key + authorize a holder),
@@ -181,7 +190,9 @@ contract Handler is Test {
         vm.prank(admin);
         try slt.setBurnSource(victim, true) {
             revert("INV-8 violated: burn source widened after lock");
-        } catch {}
+        } catch (bytes memory r) {
+            _expectSelector(r, SLT.SLT_BurnSourceLocked.selector);
+        }
 
         bytes32 burner = slt.BURNER_ROLE();
         vm.prank(admin);
@@ -189,7 +200,9 @@ contract Handler is Test {
         vm.prank(rogueBurner);
         try slt.adminBurn(victim, amount) {
             revert("INV-8 violated: rogue burner burned a holder balance");
-        } catch {}
+        } catch (bytes memory r) {
+            _expectSelector(r, SLT.SLT_BurnSourceNotAuthorized.selector);
+        }
     }
 
     /// @notice Admin tries to add a second minter after lockMinterRole() — must revert.
@@ -201,7 +214,40 @@ contract Handler is Test {
         vm.prank(admin);
         try slt.grantRole(minter, target) {
             revert("INV-9 violated: minter set widened after lock");
-        } catch {}
+        } catch (bytes memory r) {
+            _expectSelector(r, IAccessControl.AccessControlUnauthorizedAccount.selector);
+        }
+    }
+
+    /// @notice Admin tries to REVOKE the MintContract's minter role after lockMinterRole() — must revert.
+    function revokeMinterAttempt() external {
+        bytes32 minter = slt.MINTER_ROLE();
+        vm.prank(admin);
+        try slt.revokeRole(minter, address(mintContract)) {
+            revert("INV-9 violated: minter revoked after lock");
+        } catch (bytes memory r) {
+            _expectSelector(r, IAccessControl.AccessControlUnauthorizedAccount.selector);
+        }
+    }
+
+    /// @notice Advance time without updating the oracle, so the stale-but-unpaused state is reachable.
+    function warpOnly(
+        uint256 secs
+    ) external {
+        skip(bound(secs, 1 hours, 2 days));
+    }
+
+    /// @dev Assert a caught revert carries exactly the expected custom-error selector.
+    function _expectSelector(
+        bytes memory r,
+        bytes4 expected
+    ) internal pure {
+        require(r.length >= 4, "revert without selector");
+        bytes4 got;
+        assembly {
+            got := mload(add(r, 32))
+        }
+        require(got == expected, "unexpected revert selector");
     }
 
     // ----------------------------------------------------------------------

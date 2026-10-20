@@ -51,6 +51,7 @@ contract DeployFuji is Script {
         uint256 minMint = vm.envUint("MIN_MINT_AMOUNT");
         uint256 maxMint = vm.envUint("MAX_MINT_AMOUNT");
 
+        require(block.chainid == 43113, "DeployFuji: not Fuji (43113)");
         address deployer = vm.addr(deployerKey);
         console2.log("===========================================");
         console2.log("SLT V1 Fuji Testnet Deployment");
@@ -74,18 +75,23 @@ contract DeployFuji is Script {
         console2.log("SLT:", address(slt));
 
         // 4. MintContract. Deployer = admin + pauser.
+        address[] memory stables = new address[](2);
+        stables[0] = address(usdc);
+        stables[1] = address(usdt);
         MintContract mintContract =
-            new MintContract(address(slt), address(oracle), deployer, deployer, deployer, minMint, maxMint);
+            new MintContract(address(slt), address(oracle), deployer, deployer, deployer, minMint, maxMint, stables);
         console2.log("MintContract:", address(mintContract));
 
-        // 5. Wire roles + whitelist (deployer has admin authority on Fuji).
+        // 5. Wire roles (whitelist seeded in constructor, H-1; deployer has admin authority on Fuji).
         slt.grantRole(slt.MINTER_ROLE(), address(mintContract));
-        mintContract.setStablecoinAccepted(address(usdc), true);
-        mintContract.setStablecoinAccepted(address(usdt), true);
 
-        // v1.1-audit lock sequence (one-way, mirrors mainnet runbook steps 5-6).
-        slt.lockMinterRole(address(mintContract)); // H-01 / L-04
-        slt.lockBurnSource(); // M-01
+        // Verify before the one-way locks (mirrors mainnet runbook step 2).
+        require(slt.minterCount() == 1 && slt.hasRole(slt.MINTER_ROLE(), address(mintContract)), "minter wiring");
+        require(slt.burnSourceCount() == 1 && slt.authorizedBurnSource(deployer), "burn source wiring");
+
+        // v1.1-audit lock sequence (one-way, mirrors mainnet runbook steps 3-4).
+        slt.lockMinterRole(address(mintContract)); // H-01 / L-04 / M-4
+        slt.lockBurnSource(deployer); // M-01 / M-3
 
         // 6. Mint some test stable to the deployer for an initial mint smoke test.
         usdc.faucet(10_000 * 1e6); // $10,000 tUSDC
@@ -99,7 +105,7 @@ contract DeployFuji is Script {
         console2.log("Roles wired:");
         console2.log("  - SLT.MINTER_ROLE granted to MintContract");
         console2.log("  - MintContract whitelisted tUSDC + tUSDT");
-        console2.log("  - SLT.lockMinterRole(MintContract) + SLT.lockBurnSource() executed (one-way)");
+        console2.log("  - SLT.lockMinterRole(MintContract) + SLT.lockBurnSource(treasury) executed (one-way)");
         console2.log("  - Deployer holds: ORACLE_UPDATER, GUARDIAN, ADMIN, PAUSER, BURNER, CONFIG");
         console2.log("");
         console2.log("Add these to dashboard .env.local:");

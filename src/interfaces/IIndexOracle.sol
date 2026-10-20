@@ -13,7 +13,7 @@ interface IIndexOracle {
     function lastUpdateTimestamp() external view returns (uint256);
 
     /// @notice Returns whether the oracle is currently considered fresh.
-    /// @dev If staleness exceeds graceperiod, integrations should treat the oracle as paused.
+    /// @dev If staleness exceeds gracePeriod, integrations should treat the oracle as paused.
     function isFresh() external view returns (bool);
 
     /// @notice Convert a stablecoin amount (in 6-decimal units) to SLT amount (18-decimal units) at current index.

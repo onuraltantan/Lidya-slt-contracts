@@ -54,6 +54,12 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     ///         Defaults (20h / 1 day) satisfy it exactly at the boundary.
     uint256 public constant STALENESS_SLACK = 4 hours;
 
+    /// @notice Sanity band for the constructor's initialIndex (0.1 – 10.0 in 1e18 scale).
+    /// @dev    Guards against a mistyped env value (e.g. 1e6 or 1e30) freezing the bound math or
+    ///         mis-pricing every mint. Does NOT bound later updates (see M-04, accepted).
+    uint256 public constant MIN_INITIAL_INDEX = 1e17;
+    uint256 public constant MAX_INITIAL_INDEX = 1e19;
+
     // -----------------------------------------------------------------------
     // Mutable state
     // -----------------------------------------------------------------------
@@ -100,6 +106,10 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     /// @notice Reverts when initialIndex or a proposed updateIndex value is zero.
     error IndexOracle_ZeroIndex();
 
+    /// @notice Reverts when the constructor initialIndex is outside [MIN_INITIAL_INDEX, MAX_INITIAL_INDEX].
+    /// @param initialIndex The rejected value.
+    error IndexOracle_InitialIndexOutOfRange(uint256 initialIndex);
+
     /// @notice Reverts on invalid constructor or setter inputs (zero address, out-of-range parameter).
     error IndexOracle_InvalidConfig();
 
@@ -134,6 +144,9 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
         address updater
     ) {
         if (initialIndex == 0) revert IndexOracle_ZeroIndex();
+        if (initialIndex < MIN_INITIAL_INDEX || initialIndex > MAX_INITIAL_INDEX) {
+            revert IndexOracle_InitialIndexOutOfRange(initialIndex);
+        }
         if (admin == address(0) || guardian == address(0) || updater == address(0)) {
             revert IndexOracle_InvalidConfig();
         }
@@ -177,12 +190,15 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
             revert IndexOracle_TooSoon(lastUpdateTimestamp, minUpdateInterval);
         }
 
-        // Bounds check: |newIndex - previous| / previous <= maxChangeBps / BPS.
+        // Bounds check: |newIndex - previous| / previous <= maxChangeBps / BPS, evaluated WITHOUT
+        // integer division so that e.g. a 5.0099% move does not round down to 500 bps and slip
+        // through (finding L-1). Overflow margin: index < ~1e73 for delta * BPS to fit in uint256.
         uint256 delta = newIndex > previous ? newIndex - previous : previous - newIndex;
-        uint256 deltaBps = (delta * BPS) / previous;
-        if (deltaBps > maxChangeBps) {
+        if (delta * BPS > maxChangeBps * previous) {
             revert IndexOracle_OutOfBounds(newIndex, previous, maxChangeBps);
         }
+        // Rounded value is for the event only; the accept/reject decision above is exact.
+        uint256 deltaBps = (delta * BPS) / previous;
 
         pricePerShare = newIndex;
         lastUpdateTimestamp = block.timestamp;
@@ -283,12 +299,13 @@ contract IndexOracle is IIndexOracle, AccessControl, Pausable {
     }
 
     /// @notice Adjust the minimum interval between consecutive successful updates. Restricted to admin.
-    /// @param newInterval New interval in seconds. Must be in [20 hours, 1 day].
-    /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input. The 20-hour hard
-    ///         floor makes the documented daily-cadence / ±5%-per-update-per-day behavior a
-    ///         code-level guarantee: even a compromised admin cannot re-enable rapid-fire
-    ///         updates to walk the index. Upper limit stays below gracePeriod's 1-day default
-    ///         so a normally-operating updater never trips staleness.
+    /// @param newInterval New interval in seconds. Must be in [20 hours, 1 day] AND satisfy
+    ///        `gracePeriod >= newInterval + STALENESS_SLACK` (M-02). With the default 1-day grace only
+    ///        exactly 20 hours is accepted; raise gracePeriod first (to >= newInterval + 4h) for longer.
+    /// @dev    Reverts with IndexOracle_InvalidConfig on out-of-range input or when the M-02 guard fails.
+    ///         The 20-hour hard floor makes the documented daily-cadence / ±5%-per-update behavior a
+    ///         code-level guarantee: even a compromised admin cannot re-enable rapid-fire updates to
+    ///         walk the index.
     function setMinUpdateInterval(
         uint256 newInterval
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {

@@ -6,6 +6,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {SLT} from "../src/SLT.sol";
 import {IndexOracle} from "../src/IndexOracle.sol";
 import {MintContract} from "../src/MintContract.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @notice Minimal mock USDC for tests (6 decimals).
 contract MockUSDC is ERC20 {
@@ -56,7 +57,10 @@ contract ReentrantUSDC is ERC20 {
     ) public override returns (bool) {
         if (attackArmed && address(target) != address(0)) {
             attackArmed = false; // disarm to prevent infinite recursion in revert path
-            // This nested call should revert with ReentrancyGuardReentrantCall().
+            // Fund + approve ourselves so the nested mint would SUCCEED if nonReentrant were missing.
+            _mint(address(this), 1_000 * 1e6);
+            _approve(address(this), address(target), 1_000 * 1e6);
+            // This nested call must revert with ReentrancyGuardReentrantCall().
             target.mintSLT(address(this), 1_000 * 1e6);
         }
         return super.transferFrom(from, to, amount);
@@ -78,16 +82,22 @@ contract MintContractTest is Test {
     uint256 internal constant MIN_MINT = 1_000 * 1e6; // $1,000
     uint256 internal constant MAX_MINT = 5_000_000 * 1e6; // $5,000,000
 
+    function _arr(
+        address a
+    ) internal pure returns (address[] memory r) {
+        r = new address[](1);
+        r[0] = a;
+    }
+
     function setUp() public {
         oracle = new IndexOracle(1e18, admin, admin, admin);
         slt = new SLT(admin, pauser, address(oracle));
         usdc = new MockUSDC();
 
-        mintContract = new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT);
+        mintContract = new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
 
         vm.startPrank(admin);
         slt.grantRole(slt.MINTER_ROLE(), address(mintContract));
-        mintContract.setStablecoinAccepted(address(usdc), true);
         vm.stopPrank();
     }
 
@@ -97,32 +107,32 @@ contract MintContractTest is Test {
 
     function test_Constructor_RevertOnZeroSltToken() public {
         vm.expectRevert(MintContract.MintContract_ZeroAddress.selector);
-        new MintContract(address(0), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT);
+        new MintContract(address(0), address(oracle), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
     }
 
     function test_Constructor_RevertOnZeroOracle() public {
         vm.expectRevert(MintContract.MintContract_ZeroAddress.selector);
-        new MintContract(address(slt), address(0), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT);
+        new MintContract(address(slt), address(0), treasurySafe, admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
     }
 
     function test_Constructor_RevertOnZeroSafe() public {
         vm.expectRevert(MintContract.MintContract_ZeroAddress.selector);
-        new MintContract(address(slt), address(oracle), address(0), admin, pauser, MIN_MINT, MAX_MINT);
+        new MintContract(address(slt), address(oracle), address(0), admin, pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
     }
 
     function test_Constructor_RevertOnZeroAdmin() public {
         vm.expectRevert(MintContract.MintContract_ZeroAddress.selector);
-        new MintContract(address(slt), address(oracle), treasurySafe, address(0), pauser, MIN_MINT, MAX_MINT);
+        new MintContract(address(slt), address(oracle), treasurySafe, address(0), pauser, MIN_MINT, MAX_MINT, _arr(address(usdc)));
     }
 
     function test_Constructor_RevertOnZeroMin() public {
         vm.expectRevert(MintContract.MintContract_InvalidLimits.selector);
-        new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, 0, MAX_MINT);
+        new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, 0, MAX_MINT, _arr(address(usdc)));
     }
 
     function test_Constructor_RevertOnMinGreaterThanMax() public {
         vm.expectRevert(MintContract.MintContract_InvalidLimits.selector);
-        new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MAX_MINT + 1, MAX_MINT);
+        new MintContract(address(slt), address(oracle), treasurySafe, admin, pauser, MAX_MINT + 1, MAX_MINT, _arr(address(usdc)));
     }
 
     function test_Constructor_GrantsCorrectRoles() public view {
@@ -241,17 +251,21 @@ contract MintContractTest is Test {
 
     function test_Mint_RevertOnReentrancy() public {
         ReentrantUSDC bad = new ReentrantUSDC();
-        vm.prank(admin);
+        vm.startPrank(admin);
         mintContract.setStablecoinAccepted(address(bad), true);
+        vm.warp(block.timestamp + mintContract.STABLECOIN_DELAY());
+        mintContract.executeStablecoinAccepted(address(bad));
+        vm.stopPrank();
 
         bad.mint(alice, 10_000 * 1e6);
         bad.arm(mintContract);
 
         vm.startPrank(alice);
         bad.approve(address(mintContract), 10_000 * 1e6);
-        vm.expectRevert();
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
         mintContract.mintSLT(address(bad), 1_000 * 1e6);
         vm.stopPrank();
+        assertEq(slt.totalSupply(), 0, "guard held: nothing minted");
     }
 
     // ----------------------------------------------------------------------
