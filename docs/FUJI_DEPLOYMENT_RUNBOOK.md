@@ -245,3 +245,15 @@ Whitelist seeded in the constructor; script verified `minterCount==1`, `burnSour
 
 Pending for 21 Oct (time-gated on-chain): `updateIndex` after 20h; `executeStablecoinAccepted(tUSDT)` at ≥ unix `1792574352` (21 Oct 2026 18:19 UTC) — scheduled follow-up will run both and append results here.
 
+
+### 21 Oct follow-up (scheduled run, ~21 Oct 2026 03:52 UTC — unix 1792607500)
+
+Both time gates had elapsed (`lastUpdateTimestamp=1792487884` + 72000 ≤ now; `pendingStablecoinExecutableAt=1792574352` ≤ now).
+
+| Step | Result | Tx / selector |
+|---|---|---|
+| `updateIndex(1.01e18)` | ok → `pricePerShare=1010000000000000000` (1.01e18) · `isFresh=true` · `lastUpdateTimestamp=1792607516` | `0xe1f6ec3885b069c2fb346b6732193abb3a5c19c176398cae9e0b8c443a5f1380` |
+| `updateIndex(1.02e18)` immediately after | reverts `IndexOracle_TooSoon(1792607516, 72000)` (throttle intact) | `0x4624ed56` |
+| `executeStablecoinAccepted(tUSDT)` | ok → `acceptedStablecoin(tUSDT)=true` · `pendingStablecoinExecutableAt(tUSDT)=0` | `0xc2911d7c974c96fdd6ff601abdc71e90556dd6b7b5da3c85d929333c5ae83bd3` |
+
+Fuji v1.1.1-audit E2E complete. Next oracle update window opens at unix 1792679516 (21 Oct 2026 ~23:52 UTC).
